@@ -151,4 +151,60 @@ function M.keywords_for_filetype(ft)
   return M.keywords_for_lang(lang)
 end
 
+-- 光标处的 treesitter 节点(先强制增量解析,否则 get_node 可能返回 nil
+-- 或旧树)。无 parser 时返回 nil。
+function M.node_at_cursor(bufnr)
+  bufnr = bufnr or 0
+  local parser = M.get_parser(bufnr)
+  if not parser then
+    return nil
+  end
+  pcall(parser.parse, parser) -- 增量解析,便宜
+  local ok, node = pcall(vim.treesitter.get_node, { bufnr = bufnr })
+  if ok then
+    return node
+  end
+  return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- 上下文检测:光标是否位于 import/require 语句的字符串参数内
+-- (用于放宽路径补全的触发条件)。返回 true / false;无 parser 时返回 nil
+-- (fallback:调用方维持原有行为)。
+-- ---------------------------------------------------------------------------
+function M.in_import_string(bufnr)
+  bufnr = bufnr or 0
+  if not M.get_parser(bufnr) then
+    return nil
+  end
+  local node = M.node_at_cursor(bufnr)
+  if not node then
+    return false
+  end
+  local in_string = false
+  while node do
+    local t = node:type()
+    if t:find('string') then
+      in_string = true
+    end
+    -- python: import_statement/import_from_statement
+    -- c/cpp:  preproc_include; js/ts: import_statement; rust: use_declaration
+    if t:find('import') or t:find('include') or t == 'use_declaration' then
+      return in_string
+    end
+    -- lua 等: require('...') 是普通函数调用,看被调函数名
+    if t == 'function_call' or t == 'call_expression' then
+      local name_node = node:named_child(0)
+      if name_node then
+        local nok, txt = pcall(vim.treesitter.get_node_text, name_node, bufnr)
+        if nok and txt == 'require' then
+          return in_string
+        end
+      end
+    end
+    node = node:parent()
+  end
+  return false
+end
+
 return M

@@ -53,8 +53,8 @@ end
 -- 注释/字符串检测(对照 s:InsideCommentOrString):treesitter 优先,syntax 兜底
 -- ---------------------------------------------------------------------------
 local function inside_comment_or_string()
-  local ok, node = pcall(vim.treesitter.get_node, 0)
-  if ok and node then
+  local node = require('ycm.ts').node_at_cursor(0)
+  if node then
     while node do
       local t = node:type()
       if t:find('comment') then
@@ -226,7 +226,10 @@ local function request_completion(force_semantic)
     end
   end
   -- 路径补全(YCM filepath completer,与 identifier 候选合并)
-  local path_items, path_start = path.collect(bufnr, ft)
+  -- 若 treesitter 判定光标在 import/require 字符串内,放宽触发(裸 token 也补全);
+  -- 无 parser 时 in_import_string 返回 nil,维持原行为(fallback)
+  local in_import = require('ycm.ts').in_import_string(bufnr)
+  local path_items, path_start = path.collect(bufnr, ft, in_import == true)
   if path_items then
     start_col = path_start
     sync_items = path_items

@@ -101,6 +101,44 @@ eq(ids.db.lua['__keywords__'] ~= nil, true, '播种: 写入 __keywords__ 伪条�
 local seeded = ids.collect('whil', 'lua')
 eq(seeded[1], 'while', '播种: 输入 whil 补出 while')
 
+-- ---- 上下文感知路径补全(特性3) ----
+local ts_mod = require('ycm.ts')
+local path = require('ycm.sources.path')
+local pbuf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_set_current_buf(pbuf)
+vim.bo[pbuf].filetype = 'lua'
+vim.api.nvim_buf_set_lines(pbuf, 0, -1, false, { 'require("ut ")', 'local s = "ut "' })
+vim.api.nvim_win_set_cursor(0, { 1, 11 }) -- require("ut| ")
+eq(ts_mod.in_import_string(pbuf), true, '上下文: require 字符串内为 true')
+vim.api.nvim_win_set_cursor(0, { 2, 11 }) -- local s = "ut| "
+eq(ts_mod.in_import_string(pbuf), false, '上下文: 普通字符串内为 false')
+
+-- 无 parser: 返回 nil(走 fallback,不放宽)
+local nbuf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_set_current_buf(nbuf)
+vim.bo[nbuf].filetype = 'notrealft'
+vim.api.nvim_buf_set_lines(nbuf, 0, -1, false, { 'require("ut ")' })
+vim.api.nvim_win_set_cursor(0, { 1, 11 })
+eq(ts_mod.in_import_string(nbuf), nil, '上下文: 无 parser 返回 nil')
+
+-- relaxed 路径补全:临时目录下的裸 token
+local tmpdir = vim.fn.tempname()
+vim.fn.mkdir(tmpdir, 'p')
+vim.fn.writefile({}, tmpdir .. '/util_alpha.lua')
+vim.fn.mkdir(tmpdir .. '/util_dir')
+local fbuf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_name(fbuf, tmpdir .. '/main.lua')
+vim.api.nvim_set_current_buf(fbuf)
+vim.bo[fbuf].filetype = 'lua'
+vim.api.nvim_buf_set_lines(fbuf, 0, -1, false, { 'require("ut ' })
+vim.api.nvim_win_set_cursor(0, { 1, 11 })
+local items = path.collect(fbuf, 'lua', true)
+local words = vim.tbl_map(function(i) return i.word end, items or {})
+table.sort(words)
+eq(words, { 'util_alpha.lua', 'util_dir/' }, 'relaxed: 裸 token 列出目录内容')
+eq(path.collect(fbuf, 'lua', false), nil, '非 relaxed: 无 / 的 token 不触发')
+vim.fn.delete(tmpdir, 'rf')
+
 -- ---- query 计算(StartOfLongestIdentifierEndingAtIndex) ----
 local buf = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_set_current_buf(buf)

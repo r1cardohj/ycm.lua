@@ -133,9 +133,9 @@ when no treesitter parser is available)
 
 | Feature | Status | Fallback without treesitter |
 |---|---|---|
-| Comment/string stripping via `@comment`/`@string` captures when collecting identifiers | 📋 planned | current hand-written per-language scanner |
-| Keyword seeding from `queries/<lang>/highlights.scm` literals (modern `ycm_seed_identifiers_with_syntax`) | 📋 planned | current nothing (no syntax-file parsing either) |
-| Context-aware sources: inside `import`/`require` nodes, switch to path/module completion | 📋 planned | current plain path completion |
+| Comment/string stripping via `@comment`/`@string` captures when collecting identifiers | ✅ | hand-written per-language scanner |
+| Keyword seeding from `queries/<lang>/highlights.scm` literals (modern `ycm_seed_identifiers_with_syntax`) | ✅ | none (silently skipped) |
+| Context-aware sources: inside `import`/`require` nodes, path completion triggers on bare tokens | ✅ | plain path completion (requires `/` in token) |
 | Lightweight member completion without LSP: learn `receiver.field` access patterns (`self.` → members seen on `self` elsewhere) | 📋 planned | current identifier-only completion |
 
 **Implementation approximations** (rarely perceptible)

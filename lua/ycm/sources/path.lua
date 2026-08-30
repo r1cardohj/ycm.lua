@@ -4,13 +4,18 @@ local options = require('ycm.options')
 
 local M = {}
 
--- 从光标前文本提取路径 token;返回 (token, start_col) 或 nil
-local function path_token_before_cursor()
+-- 从光标前文本提取路径 token;返回 (token, start_col) 或 nil。
+-- relaxed 为 true 时(treesitter 判定处于 import/require 字符串内)
+-- 允许不含 '/' 的裸 token。
+local function path_token_before_cursor(relaxed)
   local line = vim.api.nvim_get_current_line()
   local col = vim.fn.col('.')
   local before = line:sub(1, col - 1)
   local token = before:match('([%w%._~%-%/]+)$')
-  if not token or not token:find('/') then
+  if not token or token == '' then
+    return nil
+  end
+  if not relaxed and not token:find('/') then
     return nil
   end
   return token, col - #token
@@ -32,22 +37,23 @@ local function expand_dir(dir, bufnr)
   return dir
 end
 
--- 返回 (items, start_col);items 中 word 为路径最后一段(目录带 '/')
-function M.collect(bufnr, ft)
+-- 返回 (items, start_col);items 中 word 为路径最后一段(目录带 '/')。
+-- relaxed 见 path_token_before_cursor。
+function M.collect(bufnr, ft, relaxed)
   local opts = options.get()
   if not opts.use_filepath_completion or opts.filepath_blacklist[ft] then
     return nil
   end
 
-  local token, token_start = path_token_before_cursor()
+  local token, token_start = path_token_before_cursor(relaxed)
   if not token then
     return nil
   end
 
-  -- 拆分目录部分与待补全前缀
+  -- 拆分目录部分与待补全前缀(裸 token 没有目录部分)
   local dir_part, base = token:match('^(.*%/)([^%/]*)$')
   if not dir_part then
-    return nil
+    dir_part, base = '', token
   end
   local dir = expand_dir(dir_part, bufnr)
 
