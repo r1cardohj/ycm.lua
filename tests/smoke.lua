@@ -55,6 +55,39 @@ eq(words.commented_var, nil, '行注释中的标识符不收集')
 eq(words.blocked_var, nil, '块注释中的标识符不收集')
 eq(words.string_var, nil, '字符串中的标识符不收集')
 
+-- ---- treesitter 剔除(特性1):有 parser 时走 @comment/@string capture ----
+local tsbuf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_set_current_buf(tsbuf)
+vim.bo[tsbuf].filetype = 'lua'
+vim.api.nvim_buf_set_lines(tsbuf, 0, -1, false, {
+  'local ts_real = 1',
+  '-- local ts_commented = 2',
+  '--[[', 'local ts_blocked = 3', ']]',
+  'local ts_str = "ts_string_var"',
+})
+local ids = require('ycm.sources.identifiers')
+ids.reparse_buffer(tsbuf, 'lua')
+local tswords = ids.db.lua[tsbuf].words
+eq(tswords.ts_real, true, 'treesitter: 收集正常标识符')
+eq(tswords.ts_commented, nil, 'treesitter: 行注释剔除')
+eq(tswords.ts_blocked, nil, 'treesitter: 块注释剔除(scanner 做不到)')
+eq(tswords.ts_string_var, nil, 'treesitter: 字符串剔除')
+
+-- 无 parser 的 filetype:回退手写 scanner
+local rawbuf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_set_current_buf(rawbuf)
+vim.bo[rawbuf].filetype = 'notrealft'
+vim.api.nvim_buf_set_lines(rawbuf, 0, -1, false, {
+  'raw_real = 1', '# raw_commented = 2', 'raw_s = "raw_string_var"',
+})
+ids.reparse_buffer(rawbuf, 'notrealft')
+local rawwords = ids.db.notrealft[rawbuf].words
+eq(rawwords.raw_real, true, 'fallback: 收集正常标识符')
+eq(rawwords.raw_commented, nil, 'fallback: scanner 剔除注释')
+eq(rawwords.raw_string_var, nil, 'fallback: scanner 剔除字符串')
+vim.api.nvim_buf_delete(tsbuf, { force = true })
+vim.api.nvim_buf_delete(rawbuf, { force = true })
+
 -- ---- query 计算(StartOfLongestIdentifierEndingAtIndex) ----
 local buf = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_set_current_buf(buf)

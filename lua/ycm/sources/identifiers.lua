@@ -23,11 +23,25 @@ local function db_for(ft)
   return d
 end
 
--- 全量重建某 buffer 的标识符
+-- 全量重建某 buffer 的标识符。
+-- 剔除注释/字符串时优先用 treesitter 的 @comment/@string capture(精确),
+-- 无 parser 时回退手写 scanner(对照 ycmd 的正则剔除)。
 function M.reparse_buffer(bufnr, ft)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, true)
-  local text = table.concat(lines, '\n')
-  db_for(ft)[bufnr] = { words = ident.identifiers_from_text(text, ft) }
+  local text
+  if options.get().collect_identifiers_from_comments_and_strings then
+    text = table.concat(lines, '\n')
+    db_for(ft)[bufnr] = { words = ident.extract_identifiers(text, ft) }
+    return
+  end
+  local ranges = require('ycm.ts').comment_string_ranges(bufnr)
+  if ranges then
+    text = table.concat(require('ycm.ts').blank_ranges(lines, ranges), '\n')
+    db_for(ft)[bufnr] = { words = ident.extract_identifiers(text, ft) }
+  else
+    text = table.concat(lines, '\n')
+    db_for(ft)[bufnr] = { words = ident.identifiers_from_text(text, ft) }
+  end
 end
 
 -- 增量加入一个刚输入完成的标识符

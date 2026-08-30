@@ -183,10 +183,9 @@ M.strip_comments_and_strings = strip_comments_and_strings
 -- ---------------------------------------------------------------------------
 -- 从文本提取标识符集合
 -- ---------------------------------------------------------------------------
-function M.identifiers_from_text(text, ft)
-  if not options.get().collect_identifiers_from_comments_and_strings then
-    text = strip_comments_and_strings(text, ft)
-  end
+
+-- 纯提取(不做注释/字符串剔除)
+function M.extract_identifiers(text, ft)
   local rules = rules_for(ft)
   -- rules.start/rest 均为形如 '[%a_...]' 的字符类,直接拼接
   local pat = rules.start .. rules.rest .. '*'
@@ -195,6 +194,14 @@ function M.identifiers_from_text(text, ft)
     words[w] = true
   end
   return words
+end
+
+-- 剔除(手写 scanner,fallback 路径)+ 提取
+function M.identifiers_from_text(text, ft)
+  if not options.get().collect_identifiers_from_comments_and_strings then
+    text = strip_comments_and_strings(text, ft)
+  end
+  return M.extract_identifiers(text, ft)
 end
 
 -- ---------------------------------------------------------------------------
