@@ -331,6 +331,31 @@ vim.wait(5000, function()
   return vim.deep_equal(mem_items, { 'name[M]' })
 end)
 eq(mem_items, { 'name[M]' }, '成员学习: self.n 过滤为 name')
+
+-- ---- 回归:注释内不触发补全(complete_in_comments = false) ----
+-- 行尾光标恰好在 comment 节点开边界外,检测必须落在前一个字符上
+child([[local buf = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'local self_hint = 1', '', '' })
+require('ycm.sources.identifiers').reparse_buffer(buf, 'lua')
+vim.api.nvim_win_set_cursor(0, { 2, 0 })]])
+vim.rpcrequest(chan, 'nvim_input', '<Esc>i-- se')
+vim.wait(1500, function() return false end)
+eq(child([[return vim.fn.pumvisible()]]), 0, '注释内输入不弹菜单')
+-- 对照:正常代码里输入要弹
+vim.rpcrequest(chan, 'nvim_input', '<Esc>')
+child([[vim.api.nvim_win_set_cursor(0, { 3, 0 })]])
+vim.rpcrequest(chan, 'nvim_input', 'ise')
+local code_items = {}
+vim.wait(5000, function()
+  code_items = child([[if vim.fn.pumvisible() == 1 then
+    return vim.tbl_map(function(i) return i.word end,
+      vim.fn.complete_info({ 'items' }).items)
+  end
+  return {}]])
+  return #code_items > 0
+end)
+-- 注意:else/elseif 来自特性2播种的 lua 关键字(subsequence 'se' 命中)
+eq(code_items, { 'self_hint', 'else', 'elseif' }, '正常代码内输入弹菜单')
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)
 

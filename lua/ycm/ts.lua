@@ -153,6 +153,8 @@ end
 
 -- 光标处的 treesitter 节点(先强制增量解析,否则 get_node 可能返回 nil
 -- 或旧树)。无 parser 时返回 nil。
+-- 注意:取光标前一个字符的位置(对照 YCM 的 synID(line('.'), col('.')-1, 1)),
+-- 否则行尾光标恰好落在 comment/string 节点的开边界外,检测会失效。
 function M.node_at_cursor(bufnr)
   bufnr = bufnr or 0
   local parser = M.get_parser(bufnr)
@@ -160,7 +162,10 @@ function M.node_at_cursor(bufnr)
     return nil
   end
   pcall(parser.parse, parser) -- 增量解析,便宜
-  local ok, node = pcall(vim.treesitter.get_node, { bufnr = bufnr })
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local col = cur[2] > 0 and cur[2] - 1 or 0
+  local ok, node = pcall(vim.treesitter.get_node,
+    { bufnr = bufnr, pos = { cur[1] - 1, col } })
   if ok then
     return node
   end
