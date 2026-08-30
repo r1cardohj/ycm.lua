@@ -466,6 +466,19 @@ eq(hl2, { 12, 18 }, '签名帮助: 高亮跟随逗号移动')
 local hl_name = child([[return (vim.api.nvim_get_hl(0,
   { name = 'YcmSignatureActiveParameter', link = true }).link)]])
 eq(hl_name, 'Search', '签名帮助: 高亮组链接到主题 Search')
+-- 回归:关闭后再次弹出,语法高亮不能丢(buffer 生命周期 bug)
+child([[require('ycm.sources.signature').close()]])
+vim.rpcrequest(chan, 'nvim_input', '<Esc>obar(')
+vim.wait(5000, function()
+  return sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]])
+    == true
+end)
+has_ts = sig_state([=[return pcall(vim.treesitter.get_parser, s.buf)]=])
+eq(has_ts, true, '签名帮助: 再次弹出语法高亮仍在')
+local hl3 = sig_state([=[local m = vim.api.nvim_buf_get_extmarks(s.buf,
+    require('ycm.sources.signature').NS, 0, -1, { details = true })[1]
+  return m and { m[3], m[4].end_col } or {}]=])
+eq(hl3, { 4, 10 }, '签名帮助: 再次弹出参数高亮仍在')
 child([[require('ycm.sources.signature').close()]])
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)

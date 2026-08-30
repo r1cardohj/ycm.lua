@@ -138,7 +138,8 @@ local function ensure_buf()
     return M.state.buf
   end
   M.state.buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[M.state.buf].bufhidden = 'wipe'
+  -- 新 buffer 上没有 parser,重置缓存让 apply_syntax_highlight 重挂
+  M.state.ts_lang = nil
   return M.state.buf
 end
 
@@ -153,8 +154,11 @@ end
 -- 浮窗 buffer 按源文件类型做 treesitter 语法高亮(截图效果:lsp_signature
 -- 用 markdown fence 间接实现;我们直接在 buffer 上起 parser)
 local function apply_syntax_highlight(buf, lang)
-  if not lang or M.state.ts_lang == lang then
+  if not lang then
     return
+  end
+  if M.state.ts_lang == lang and pcall(vim.treesitter.get_parser, buf) then
+    return -- 该 buffer 已挂好 parser
   end
   pcall(vim.treesitter.stop, buf)
   if pcall(vim.treesitter.start, buf, lang) then
