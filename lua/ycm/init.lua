@@ -24,7 +24,6 @@ local state = {
   request_id = 0,                  -- 递增 id,用于丢弃过期响应
   req_pos = nil,                   -- 请求发起时的 { row, col, buf }
   req_ctx = nil,                   -- 请求上下文(同步候选等,供 LSP 回调复用)
-  last_inserted_char = nil,        -- InsertCharPre 记录,供签名帮助触发判定
 }
 
 -- ---------------------------------------------------------------------------
@@ -367,9 +366,8 @@ local function on_text_changed_insert_mode(popup_is_visible)
     state.force_semantic = false
   end
 
-  -- 签名帮助:输入触发字符('(' ',' 等)或会话激活中更新当前参数高亮
-  signature.on_text_changed(bufnr, state.last_inserted_char)
-  state.last_inserted_char = nil
+  -- 签名帮助:光标前是触发字符('(' ',' 等)或会话激活中更新当前参数高亮
+  signature.on_text_changed(bufnr)
 
   local opts = options.get()
   if (opts.auto_trigger or state.force_semantic)
@@ -454,7 +452,6 @@ function M.setup(user_opts)
   -- 对照 s:OnInsertChar / s:OnCompleteDone / s:OnCompleteChanged
   au('InsertCharPre', function()
     state.last_char_inserted_by_user = true
-    state.last_inserted_char = vim.v.char
   end)
   au('CompleteDone', function()
     state.last_char_inserted_by_user = false

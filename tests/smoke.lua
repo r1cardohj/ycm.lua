@@ -479,6 +479,19 @@ local hl3 = sig_state([=[local m = vim.api.nvim_buf_get_extmarks(s.buf,
     require('ycm.sources.signature').NS, 0, -1, { details = true })[1]
   return m and { m[3], m[4].end_col } or {}]=])
 eq(hl3, { 4, 10 }, '签名帮助: 再次弹出参数高亮仍在')
+-- 回归:autopairs 场景——'(' 是 insert 映射展开,不触发 InsertCharPre,
+-- 触发判定必须基于缓冲区文本(对照 ycmd)
+child([[vim.keymap.set('i', '(', '()<Left>',
+  { buffer = vim.api.nvim_get_current_buf() })]])
+vim.rpcrequest(chan, 'nvim_input', '<Esc>obaz(')
+vim.wait(5000, function()
+  return sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]])
+    == true
+end)
+eq(sig_state([[return vim.trim(vim.api.nvim_get_current_line())]]), 'baz()',
+  '签名帮助: autopairs 插入的括号')
+eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[1]]=]),
+  'foo(a: int, b: str)', '签名帮助: autopairs 场景也弹窗')
 child([[require('ycm.sources.signature').close()]])
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)

@@ -279,8 +279,20 @@ function M.on_response(result, filetype)
   M.show(lines, hl, lang)
 end
 
--- TextChangedI 时调用。last_char 为 InsertCharPre 记录的最后输入字符。
-function M.on_text_changed(bufnr, last_char)
+-- 光标前的字符(对照 ycmd 的缓冲区文本触发判定;不依赖 InsertCharPre,
+-- 兼容 autopairs 等映射插入——映射展开的字符不触发 InsertCharPre)
+local function char_before_cursor()
+  local cur = vim.api.nvim_win_get_cursor(0)
+  if cur[2] == 0 then
+    return nil
+  end
+  local line = vim.api.nvim_get_current_line()
+  local ch = line:sub(cur[2], cur[2])
+  return ch ~= '' and ch or nil
+end
+
+-- TextChangedI 时调用
+function M.on_text_changed(bufnr)
   if not options.get().signature_help then
     return
   end
@@ -292,6 +304,7 @@ function M.on_text_changed(bufnr, last_char)
     return
   end
 
+  local last_char = char_before_cursor()
   local is_trigger = false
   if last_char then
     for _, client in ipairs(clients) do
