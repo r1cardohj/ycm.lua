@@ -12,6 +12,9 @@ local M = {}
 -- 特殊 key '__keywords__':treesitter 关键字播种的伪 buffer 条目
 M.db = {}
 
+-- member_db[ft][bufnr] = { receiver -> { member -> true } }(成员学习)
+M.member_db = {}
+
 -- 已播种过的 filetype
 M.seeded = {}
 
@@ -46,6 +49,16 @@ function M.reparse_buffer(bufnr, ft)
     text = table.concat(lines, '\n')
     db_for(ft)[bufnr] = { words = ident.identifiers_from_text(text, ft) }
   end
+  -- 成员访问学习(无 parser 时 collect_member_accesses 返回 nil)
+  local members = require('ycm.ts').collect_member_accesses(bufnr)
+  if members then
+    local md = M.member_db[ft]
+    if not md then
+      md = {}
+      M.member_db[ft] = md
+    end
+    md[bufnr] = members
+  end
 end
 
 -- 增量加入一个刚输入完成的标识符
@@ -64,6 +77,9 @@ end
 
 function M.remove_buffer(bufnr)
   for _, d in pairs(M.db) do
+    d[bufnr] = nil
+  end
+  for _, d in pairs(M.member_db) do
     d[bufnr] = nil
   end
 end
@@ -127,6 +143,26 @@ function M.collect(query, ft)
 
   return match.filter_and_sort(
     words, query, opts.max_num_identifier_candidates, M.cand_cache)
+end
+
+-- 成员学习:收集同 filetype 所有 buffer 中 receiver 的已知成员,
+-- 做子序列过滤 + YCM 排序。无 parser 时 member_db 为空,自然返回 {}。
+function M.collect_members(ft, receiver, query)
+  local d = M.member_db[ft]
+  if not d then
+    return {}
+  end
+  local words = {}
+  for _, per_buf in pairs(d) do
+    local members = per_buf[receiver]
+    if members then
+      for m in pairs(members) do
+        words[#words + 1] = m
+      end
+    end
+  end
+  return match.filter_and_sort(
+    words, query, options.get().max_num_identifier_candidates, M.cand_cache)
 end
 
 return M

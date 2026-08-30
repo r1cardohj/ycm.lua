@@ -207,4 +207,53 @@ function M.in_import_string(bufnr)
   return false
 end
 
+-- ---------------------------------------------------------------------------
+-- 成员访问学习:收集 receiver.member / receiver->member / receiver:method
+-- 的从属关系(receiver 须为单个标识符节点,链式访问如 a.b.c 不展开)。
+-- 返回 { receiver -> { member -> true } };无 parser 时返回 nil(fallback:
+-- 调用方退回纯标识符补全)。
+-- ---------------------------------------------------------------------------
+function M.collect_member_accesses(bufnr)
+  local parser = M.get_parser(bufnr)
+  if not parser then
+    return nil
+  end
+  local ok, query = pcall(vim.treesitter.query.get, parser:lang(), 'highlights')
+  if not ok or not query then
+    return nil
+  end
+  local pok, trees = pcall(parser.parse, parser)
+  if not pok or not trees then
+    return nil
+  end
+
+  local out = {}
+  for _, tree in ipairs(trees) do
+    for id, node in query:iter_captures(tree:root(), bufnr, 0, -1) do
+      local name = query.captures[id]
+      if name and (name:find('property') or name:find('field')
+          or name:find('member') or name:find('method')) then
+        -- 成员节点的父节点的第一个 named child 是 receiver
+        local parent = node:parent()
+        local recv = parent and parent:named_child(0)
+        if recv and recv ~= node and recv:type():find('identifier') then
+          local rok, rtext = pcall(vim.treesitter.get_node_text, recv, bufnr)
+          local mok, mtext = pcall(vim.treesitter.get_node_text, node, bufnr)
+          if rok and mok
+              and rtext:match('^[%a_][%w_]*$')
+              and mtext:match('^[%a_][%w_]*$') then
+            local set = out[rtext]
+            if not set then
+              set = {}
+              out[rtext] = set
+            end
+            set[mtext] = true
+          end
+        end
+      end
+    end
+  end
+  return out
+end
+
 return M

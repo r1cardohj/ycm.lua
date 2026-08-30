@@ -236,6 +236,32 @@ local function request_completion(force_semantic)
     query = query:match('[^%/]*$') or ''
   end
 
+  -- 成员学习(特性4):receiver. / receiver-> / receiver: 上下文,
+  -- 给出该 receiver 在词库中学到的成员;无 parser 时 member_db 为空,
+  -- 自然落回普通标识符补全(fallback)
+  if not path_items then
+    local qprefix = vim.api.nvim_get_current_line():sub(1, start_col - 1)
+    local receiver = qprefix:match('([%a_][%w_]*)%.$')
+      or qprefix:match('([%a_][%w_]*)%-%>$')
+      or qprefix:match('([%a_][%w_]*):$')
+    if receiver then
+      local members = identifiers.collect_members(ft, receiver, query)
+      if #members > 0 then
+        sync_items = {}
+        for _, w in ipairs(members) do
+          sync_items[#sync_items + 1] = {
+            word = w,
+            abbr = w,
+            menu = '[M]',
+            equal = 1,
+            dup = 1,
+            empty = 1,
+          }
+        end
+      end
+    end
+  end
+
   state.req_ctx = { sync_items = sync_items, start_col = start_col, query = query }
 
   -- 对照 ycmd Completer.ShouldUseNow(Inner):语义补全的自动触发只看触发器
@@ -256,7 +282,7 @@ local function request_completion(force_semantic)
   end
 
   if not query_len_ok and not triggered and not state.force_semantic
-      and not path_items and not use_lsp then
+      and not path_items and not use_lsp and #sync_items == 0 then
     -- 对照 ycmd:所有 completer 的 ShouldUseNow 都失败 -> 空候选 -> 关菜单
     deliver(id, start_col, {})
     return

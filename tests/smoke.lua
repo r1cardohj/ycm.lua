@@ -302,6 +302,35 @@ eq(ai_lines, { 'from typing import Self', 'x = 1', 'Self' },
   '选中 Auto-import 候选后自动插入 import 语句')
 eq(child([[return vim.api.nvim_win_get_cursor(0)]]), { 3, 4 },
   '应用 additionalTextEdits 后光标位置正确')
+
+-- ---- 成员学习(特性4):无 LSP 时 self. 出已知成员 ----
+child([[require('ycm').setup({ use_lsp = false })
+local buf = vim.api.nvim_get_current_buf()
+vim.bo[buf].filetype = 'lua'
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+  'self.name = 1', 'self.age = 2', 'other.name = 3', ''
+})
+vim.api.nvim_win_set_cursor(0, { 4, 0 })]])
+vim.rpcrequest(chan, 'nvim_input', '<Esc>iself.')
+local mem_items = {}
+vim.wait(5000, function()
+  mem_items = child([[if vim.fn.pumvisible() == 1 then
+    return vim.tbl_map(function(i) return i.word .. i.menu end,
+      vim.fn.complete_info({ 'items' }).items)
+  end
+  return {}]])
+  return #mem_items > 0
+end)
+eq(mem_items, { 'age[M]', 'name[M]' },
+  '成员学习: 无 LSP 时 self. 出已知成员(不混入 other 的成员)')
+-- 继续输入 n 过滤
+vim.rpcrequest(chan, 'nvim_input', 'n')
+vim.wait(5000, function()
+  mem_items = child([[return vim.tbl_map(function(i) return i.word .. i.menu end,
+    vim.fn.complete_info({ 'items' }).items)]])
+  return vim.deep_equal(mem_items, { 'name[M]' })
+end)
+eq(mem_items, { 'name[M]' }, '成员学习: self.n 过滤为 name')
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)
 

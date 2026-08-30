@@ -136,7 +136,7 @@ when no treesitter parser is available)
 | Comment/string stripping via `@comment`/`@string` captures when collecting identifiers | ✅ | hand-written per-language scanner |
 | Keyword seeding from `queries/<lang>/highlights.scm` literals (modern `ycm_seed_identifiers_with_syntax`) | ✅ | none (silently skipped) |
 | Context-aware sources: inside `import`/`require` nodes, path completion triggers on bare tokens | ✅ | plain path completion (requires `/` in token) |
-| Lightweight member completion without LSP: learn `receiver.field` access patterns (`self.` → members seen on `self` elsewhere) | 📋 planned | current identifier-only completion |
+| Lightweight member completion without LSP: learn `receiver.field` access patterns (`self.` → members seen on `self` elsewhere) | ✅ | current identifier-only completion |
 
 **Implementation approximations** (rarely perceptible)
 
