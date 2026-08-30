@@ -431,34 +431,48 @@ vim.api.nvim_win_set_cursor(0, { 1, 0 })]])
 local function sig_state(code)
   return child([[local s = require('ycm.sources.signature').state; ]] .. code)
 end
+-- 取参数高亮 extmark(命名空间里还有围栏隐藏用的 extmark,需按 hl_group 过滤)
+child([=[_G.param_hl = function()
+  local s = require('ycm.sources.signature').state
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(s.buf,
+      require('ycm.sources.signature').NS, 0, -1, { details = true })) do
+    if m[4].hl_group == 'YcmSignatureActiveParameter' then
+      return { m[3], m[4].end_col }
+    end
+  end
+  return {}
+end]=])
 vim.rpcrequest(chan, 'nvim_input', '<Esc>ifoo(')
 vim.wait(5000, function()
   return sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]])
     == true
 end)
-eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[1]]=]),
-  'foo(a: int, b: str)', '签名帮助: 浮窗显示签名(label 缺函数名时补被调名)')
--- 文档:签名行 + 分隔线 + 文档行
+-- 带文档时:围栏行 + 签名行 + 分隔线 + 文档行
 local float_lines = sig_state(
   [=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)]=])
-eq(#float_lines, 4, '签名帮助: 签名+分隔线+文档')
-eq(float_lines[3], 'Add two things.', '签名帮助: 文档内容')
--- 浮窗 buffer 按源文件类型挂上了 treesitter 语法高亮
-local has_ts = sig_state([=[return pcall(vim.treesitter.get_parser, s.buf)]=])
+eq(float_lines[2], 'foo(a: int, b: str)',
+  '签名帮助: 浮窗显示签名(label 缺函数名时补被调名)')
+eq(#float_lines, 6, '签名帮助: 围栏+签名+分隔线+文档')
+eq(float_lines[5], 'Add two things.', '签名帮助: 文档内容')
+-- 浮窗 buffer 挂上了 markdown parser(围栏内代码由 injection 染色)
+local has_ts = sig_state([=[
+  local ok, p = pcall(vim.treesitter.get_parser, s.buf, 'markdown')
+  return ok and p ~= nil]=])
 eq(has_ts, true, '签名帮助: 浮窗语法高亮')
-eq(sig_state([=[local m = vim.api.nvim_buf_get_extmarks(s.buf,
-    require('ycm.sources.signature').NS, 0, -1, { details = true })[1]
-  return { m[3], m[4].end_col }]=]),
-  { 4, 10 }, '签名帮助: 高亮第 1 个参数')
+-- 围栏行应被 conceal_lines 隐藏
+local fence_concealed = sig_state([=[
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(s.buf,
+      require('ycm.sources.signature').NS, 0, -1, { details = true })) do
+    if m[4].conceal_lines then return true end
+  end
+  return false]=])
+eq(fence_concealed, true, '签名帮助: 围栏行已隐藏')
+eq(child([[return _G.param_hl()]]), { 4, 10 }, '签名帮助: 高亮第 1 个参数')
 -- 敲逗号后高亮移动到第 2 个参数
 vim.rpcrequest(chan, 'nvim_input', '1, ')
 local hl2 = {}
 vim.wait(5000, function()
-  hl2 = sig_state([=[if not (s.win and vim.api.nvim_win_is_valid(s.win)) then
-    return {} end
-  local m = vim.api.nvim_buf_get_extmarks(s.buf,
-    require('ycm.sources.signature').NS, 0, -1, { details = true })[1]
-  return m and { m[3], m[4].end_col } or {}]=])
+  hl2 = child([[return _G.param_hl()]])
   return hl2[1] == 12 and hl2[2] == 18
 end)
 eq(hl2, { 12, 18 }, '签名帮助: 高亮跟随逗号移动')
@@ -473,11 +487,11 @@ vim.wait(5000, function()
   return sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]])
     == true
 end)
-has_ts = sig_state([=[return pcall(vim.treesitter.get_parser, s.buf)]=])
+has_ts = sig_state([=[
+  local ok, p = pcall(vim.treesitter.get_parser, s.buf, 'markdown')
+  return ok and p ~= nil]=])
 eq(has_ts, true, '签名帮助: 再次弹出语法高亮仍在')
-local hl3 = sig_state([=[local m = vim.api.nvim_buf_get_extmarks(s.buf,
-    require('ycm.sources.signature').NS, 0, -1, { details = true })[1]
-  return m and { m[3], m[4].end_col } or {}]=])
+local hl3 = child([[return _G.param_hl()]])
 eq(hl3, { 4, 10 }, '签名帮助: 再次弹出参数高亮仍在')
 -- 回归:autopairs 场景——'(' 是 insert 映射展开,不触发 InsertCharPre,
 -- 触发判定必须基于缓冲区文本(对照 ycmd)
@@ -490,7 +504,7 @@ vim.wait(5000, function()
 end)
 eq(sig_state([[return vim.trim(vim.api.nvim_get_current_line())]]), 'baz()',
   '签名帮助: autopairs 插入的括号')
-eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[1]]=]),
+eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[2]]=]),
   'baz(a: int, b: str)', '签名帮助: autopairs 场景也弹窗')
 child([[require('ycm.sources.signature').close()]])
 

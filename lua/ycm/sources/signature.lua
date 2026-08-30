@@ -237,27 +237,38 @@ local function apply_syntax_highlight(buf, lang)
 end
 
 -- lines: 内容行(首行为签名);hl: { start_byte, end_byte }(0 基,首行)或 nil
-function M.show(lines, hl, lang)
+function M.show(lines, hl, opts)
+  opts = opts or {}
   local buf = ensure_buf()
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.api.nvim_buf_clear_namespace(buf, NS, 0, -1)
+  -- markdown 代码围栏行整行隐藏(conceal_lines)
+  local concealed = 0
+  for _, r in ipairs(opts.fence_rows or {}) do
+    if pcall(vim.api.nvim_buf_set_extmark, buf, NS, r, 0,
+        { conceal_lines = '' }) then
+      concealed = concealed + 1
+    end
+  end
   if hl then
     -- priority 高于 treesitter(100),确保当前参数高亮不被语法高亮盖住
-    vim.api.nvim_buf_set_extmark(buf, NS, 0, hl[1], {
+    vim.api.nvim_buf_set_extmark(buf, NS, opts.hl_row or 0, hl[1], {
       end_col = hl[2],
       hl_group = 'YcmSignatureActiveParameter',
       priority = 200,
       strict = false,
     })
   end
-  apply_syntax_highlight(buf, lang)
+  apply_syntax_highlight(buf, opts.lang)
 
   local width = 1
-  for _, l in ipairs(lines) do
-    width = math.max(width, vim.fn.strdisplaywidth(l))
+  for i, l in ipairs(lines) do
+    if not (opts.fence_rows and vim.tbl_contains(opts.fence_rows, i - 1)) then
+      width = math.max(width, vim.fn.strdisplaywidth(l))
+    end
   end
   width = math.min(width, vim.o.columns - 4)
-  local height = #lines
+  local height = #lines - concealed
   if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
     -- 会话中:只更新内容与尺寸,位置保持锚定(对照 YCM 的 anchor 稳定性)
     vim.api.nvim_win_set_config(M.state.win, { width = width, height = height })
@@ -336,36 +347,50 @@ function M.on_response(result, filetype)
     end
   end
 
-  -- 内容:签名行 + 分隔线 + 文档(如有),对照截图效果
-  local max_width = vim.o.columns - 4
+  -- 内容:对照 lsp_signature 的 markdown 方案——签名装进代码围栏
+  -- (injection 只对签名行做该语言的语法染色,文档不会再被当代码染色),
+  -- 围栏行整行隐藏;宽度上限 100,过长截断为 …,不再撑满全屏
+  local max_width = math.min(vim.o.columns - 4, 100)
   local function truncate(s)
     if vim.fn.strdisplaywidth(s) > max_width then
       return vim.fn.strcharpart(s, 0, max_width - 1) .. '…'
     end
     return s
   end
-  local lines = { truncate(label) }
+  label = truncate(label)
+
   local doc = sig.documentation
   if type(doc) == 'table' then
     doc = doc.value -- MarkupContent
   end
-  if type(doc) == 'string' and doc:match('%S') then
-    doc = vim.trim(doc:gsub('\r\n', '\n'))
+  local has_doc = type(doc) == 'string' and doc:match('%S') ~= nil
+
+  local lang = filetype and vim.treesitter.language.get_lang(filetype)
+    or filetype
+
+  local lines, hl_row, fence_rows, show_lang
+  if has_doc then
+    lines = { '```' .. (lang or ''), label, '```' }
     table.insert(lines, string.rep('─',
       math.min(vim.fn.strdisplaywidth(label), max_width)))
     local dl = 0
-    for line in (doc .. '\n'):gmatch('(.-)\n') do
+    for line in (vim.trim(doc:gsub('\r\n', '\n')) .. '\n'):gmatch('(.-)\n') do
       table.insert(lines, truncate(line))
       dl = dl + 1
       if dl >= 12 then -- 文档行数上限,防止浮窗占屏
         break
       end
     end
+    hl_row = 1
+    fence_rows = { 0, 2 }
+    show_lang = 'markdown' -- 围栏内的 lang 由 injection 负责
+  else
+    lines = { label }
+    hl_row = 0
+    show_lang = lang
   end
-
-  local lang = filetype and vim.treesitter.language.get_lang(filetype)
-    or filetype
-  M.show(lines, hl, lang)
+  M.show(lines, hl, { hl_row = hl_row, fence_rows = fence_rows,
+    lang = show_lang })
 end
 
 
