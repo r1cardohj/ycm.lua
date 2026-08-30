@@ -128,6 +128,16 @@ diagnostics and `vim.lsp.buf.*` cover most of these)
 | `YcmCompleter` subcommands (GoTo / Rename / FixIt / GetDoc) | ❌ |
 | Symbol finder | ❌ |
 
+**Treesitter-powered enhancements** (planned; every item degrades gracefully
+when no treesitter parser is available)
+
+| Feature | Status | Fallback without treesitter |
+|---|---|---|
+| Comment/string stripping via `@comment`/`@string` captures when collecting identifiers | 📋 planned | current hand-written per-language scanner |
+| Keyword seeding from `queries/<lang>/highlights.scm` literals (modern `ycm_seed_identifiers_with_syntax`) | 📋 planned | current nothing (no syntax-file parsing either) |
+| Context-aware sources: inside `import`/`require` nodes, switch to path/module completion | 📋 planned | current plain path completion |
+| Lightweight member completion without LSP: learn `receiver.field` access patterns (`self.` → members seen on `self` elsewhere) | 📋 planned | current identifier-only completion |
+
 **Implementation approximations** (rarely perceptible)
 
 | YCM | ycm.lua |
