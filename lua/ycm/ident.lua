@@ -48,6 +48,12 @@ local function rules_for(ft)
 end
 M.rules_for = rules_for
 
+-- 一个词是否是该 filetype 下合法的标识符
+function M.is_identifier(word, ft)
+  local rules = rules_for(ft)
+  return word:match('^' .. rules.start .. rules.rest .. '*$') ~= nil
+end
+
 -- ---------------------------------------------------------------------------
 -- 注释/字符串剔除(对照 identifier_utils.py 的
 -- FILETYPE_TO_COMMENT_AND_STRING_REGEX;把内容替换为等长空白,保留换行)

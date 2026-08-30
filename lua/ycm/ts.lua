@@ -60,4 +60,95 @@ function M.blank_ranges(lines, ranges)
   return lines
 end
 
+-- ---------------------------------------------------------------------------
+-- 关键字播种:从 queries/<lang>/highlights.scm 的字面量中提取语言关键字
+-- (现代版 ycm_seed_identifiers_with_syntax)。无 parser/查询时返回 nil,
+-- 调用方静默跳过(该特性的 fallback 即“不播种”)。
+-- ---------------------------------------------------------------------------
+
+-- 对照 YCM 从 Statement/Type/PreProc/Boolean/Identifier 根组提取
+local WANTED_CAPTURES = {
+  '^keyword',
+  '^type%.builtin',
+  '^constant%.builtin',
+  '^boolean',
+  '^function%.builtin',
+  '^include',
+  '^preproc',
+  '^define',
+}
+
+local function wanted_capture(cap)
+  for _, pat in ipairs(WANTED_CAPTURES) do
+    if cap:match(pat) then
+      return true
+    end
+  end
+  return false
+end
+
+-- 从 highlights.scm 文本提取关键字:
+--   "word" @capture        单个字面量
+--   [ "w1" "w2" ] @capture  字面量列表
+-- 断言中的字符串(如 (#eq? @foo "bar"))后面不跟 capture,天然被排除
+local function extract_keywords_from_query_text(text, out)
+  for word, cap in text:gmatch('"([^"]+)"%s*@([%w_%.%-]+)') do
+    if wanted_capture(cap) then
+      out[word] = true
+    end
+  end
+  for block, cap in text:gmatch('%[([^%]]-)%]%s*@([%w_%.%-]+)') do
+    if wanted_capture(cap) then
+      for word in block:gmatch('"([^"]+)"') do
+        out[word] = true
+      end
+    end
+  end
+end
+
+function M.keywords_for_lang(lang, visited)
+  visited = visited or {}
+  if visited[lang] then
+    return {}
+  end
+  visited[lang] = true
+
+  local ok, files = pcall(vim.treesitter.query.get_files, lang, 'highlights')
+  if not ok or not files or #files == 0 then
+    return nil
+  end
+
+  local out = {}
+  local found = false
+  for _, path in ipairs(files) do
+    local f = io.open(path)
+    if f then
+      found = true
+      local text = f:read('a')
+      f:close()
+      extract_keywords_from_query_text(text, out)
+      -- 跟随 inherits 模型行(如 typescript inherits javascript)
+      local inherits = text:match('^;+%s*inherits:%s*([%w_,%s]+)')
+      if inherits then
+        for parent in inherits:gmatch('[%w_]+') do
+          for w in pairs(M.keywords_for_lang(parent, visited) or {}) do
+            out[w] = true
+          end
+        end
+      end
+    end
+  end
+  return found and out or nil
+end
+
+-- filetype -> treesitter lang(如 javascriptreact -> javascript)
+function M.keywords_for_filetype(ft)
+  local lang = ft
+  local ok, mapped = pcall(vim.treesitter.language.get_lang, ft)
+  if ok and mapped then
+    lang = mapped
+  end
+  return M.keywords_for_lang(lang)
+end
+
 return M

@@ -88,6 +88,19 @@ eq(rawwords.raw_string_var, nil, 'fallback: scanner 剔除字符串')
 vim.api.nvim_buf_delete(tsbuf, { force = true })
 vim.api.nvim_buf_delete(rawbuf, { force = true })
 
+-- ---- 关键字播种(特性2):从 highlights.scm 字面量提取 ----
+local kws = require('ycm.ts').keywords_for_filetype('lua')
+eq(kws ~= nil and kws['function'] == true, true, '播种: lua 提取到 function')
+eq(kws ~= nil and kws['if'] == true, true, '播种: lua 提取到 if')
+eq(kws ~= nil and kws['while'] == true, true, '播种: lua 提取到 while')
+eq(require('ycm.ts').keywords_for_filetype('notrealft'), nil,
+  '播种: 无 parser 的语言返回 nil(静默跳过)')
+-- 播种进入词库并可被补全收集
+ids.ensure_seeded('lua')
+eq(ids.db.lua['__keywords__'] ~= nil, true, '播种: 写入 __keywords__ 伪条目')
+local seeded = ids.collect('whil', 'lua')
+eq(seeded[1], 'while', '播种: 输入 whil 补出 while')
+
 -- ---- query 计算(StartOfLongestIdentifierEndingAtIndex) ----
 local buf = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_set_current_buf(buf)

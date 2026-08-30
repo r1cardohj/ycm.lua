@@ -9,7 +9,11 @@ local options = require('ycm.options')
 local M = {}
 
 -- db[ft][bufnr] = { words = { word -> true } }
+-- 特殊 key '__keywords__':treesitter 关键字播种的伪 buffer 条目
 M.db = {}
+
+-- 已播种过的 filetype
+M.seeded = {}
 
 -- word -> Candidate 的预处理缓存(weak values,GC 友好)
 M.cand_cache = setmetatable({}, { __mode = 'v' })
@@ -73,10 +77,36 @@ function M.move_buffer(bufnr, old_ft, new_ft)
   end
 end
 
+-- 从 treesitter highlights 查询中提取语言关键字,播种进该 filetype 的词库
+-- (每个 filetype 只做一次;无 parser/查询时静默跳过)
+function M.ensure_seeded(ft)
+  if M.seeded[ft] then
+    return
+  end
+  M.seeded[ft] = true
+  if not options.get().seed_identifiers_with_syntax then
+    return
+  end
+  local kws = require('ycm.ts').keywords_for_filetype(ft)
+  if kws and next(kws) then
+    -- 过滤掉非标识符字面量(如 C 的 "#include")
+    local filtered = {}
+    for w in pairs(kws) do
+      if ident.is_identifier(w, ft) then
+        filtered[w] = true
+      end
+    end
+    if next(filtered) then
+      db_for(ft)['__keywords__'] = { words = filtered }
+    end
+  end
+end
+
 -- 对照 IdentifierCompleter::CandidatesForQueryAndType:
 -- 汇总同 filetype 所有 buffer 的标识符,做子序列过滤 + YCM 排序,
 -- 截断到 max_num_identifier_candidates
 function M.collect(query, ft)
+  M.ensure_seeded(ft)
   local opts = options.get()
   local d = M.db[ft]
   if not d then

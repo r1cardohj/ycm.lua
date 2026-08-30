@@ -13,6 +13,9 @@ M.defaults = {
   complete_in_comments = false,           -- g:ycm_complete_in_comments
   complete_in_strings = true,             -- g:ycm_complete_in_strings
   collect_identifiers_from_comments_and_strings = false,
+  -- 用 treesitter highlights 查询中的字面量播种语言关键字
+  -- (现代版 g:ycm_seed_identifiers_with_syntax;无 parser 时静默跳过)
+  seed_identifiers_with_syntax = true,
 
   -- filetype 白/黑名单(与 YCM 默认一致)
   filetype_whitelist = { ['*'] = true },
