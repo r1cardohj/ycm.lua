@@ -8,6 +8,7 @@ local triggers = require('ycm.triggers')
 local keys = require('ycm.keys')
 local identifiers = require('ycm.sources.identifiers')
 local lsp = require('ycm.sources.lsp')
+local signature = require('ycm.sources.signature')
 local path = require('ycm.sources.path')
 
 local M = {}
@@ -23,6 +24,7 @@ local state = {
   request_id = 0,                  -- 递增 id,用于丢弃过期响应
   req_pos = nil,                   -- 请求发起时的 { row, col, buf }
   req_ctx = nil,                   -- 请求上下文(同步候选等,供 LSP 回调复用)
+  last_inserted_char = nil,        -- InsertCharPre 记录,供签名帮助触发判定
 }
 
 -- ---------------------------------------------------------------------------
@@ -365,6 +367,10 @@ local function on_text_changed_insert_mode(popup_is_visible)
     state.force_semantic = false
   end
 
+  -- 签名帮助:输入触发字符('(' ',' 等)或会话激活中更新当前参数高亮
+  signature.on_text_changed(bufnr, state.last_inserted_char)
+  state.last_inserted_char = nil
+
   local opts = options.get()
   if (opts.auto_trigger or state.force_semantic)
       and not inside_comment_or_string_and_should_stop()
@@ -397,6 +403,7 @@ local function on_insert_leave()
   state.last_char_inserted_by_user = false
   state.lsp_session = nil
   state.request_id = state.request_id + 1
+  signature.close()
   local bufnr = vim.api.nvim_get_current_buf()
   if vim.b[bufnr].ycm_completing then
     -- 对照 s:OnInsertLeave -> OnFileReadyToParse:全量重建当前 buffer 词库
@@ -425,6 +432,16 @@ function M.setup(user_opts)
     vim.api.nvim_create_autocmd(events, { group = AUGROUP, callback = cb })
   end
 
+  -- 签名帮助当前参数的高亮组:链接到主题的 Search 组(对照 lsp_signature 的
+  -- `hi default link LspSignatureActiveParameter Search`),随配色自适应;
+  -- colorscheme 会 hi clear,故在 ColorScheme 后重建
+  local function default_sig_hl()
+    vim.api.nvim_set_hl(0, 'YcmSignatureActiveParameter',
+      { link = 'Search', default = true })
+  end
+  default_sig_hl()
+  au('ColorScheme', default_sig_hl)
+
   au('FileType', function(a) on_file_type_set(a.buf) end)
   au('BufEnter', function(a) on_buffer_enter(a.buf) end)
   au('BufWritePost', function(a)
@@ -437,6 +454,7 @@ function M.setup(user_opts)
   -- 对照 s:OnInsertChar / s:OnCompleteDone / s:OnCompleteChanged
   au('InsertCharPre', function()
     state.last_char_inserted_by_user = true
+    state.last_inserted_char = vim.v.char
   end)
   au('CompleteDone', function()
     state.last_char_inserted_by_user = false

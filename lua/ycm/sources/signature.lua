@@ -1,0 +1,333 @@
+-- 签名帮助浮窗:对照 YCM 的 signature help(python/ycm/signature_help.py)
+-- 与 ray-x/lsp_signature.nvim 的当前参数高亮。
+--   - 触发:输入 server 声明的 signatureHelp trigger/retrigger 字符('(' ',' 等),
+--     或签名会话激活中继续输入(更新当前参数)
+--   - 展示:光标所在行上方的浮窗,锚定在会话激活时的位置(对照 YCM 的 anchor,
+--     避免浮窗随输入横向跳动);当前参数用 extmark 高亮
+--   - 当前参数:signature.activeParameter -> result.activeParameter ->
+--     逗号计数兜底(对照 lsp_signature 的 helper.fallback)
+local options = require('ycm.options')
+
+local M = {}
+
+local NS = vim.api.nvim_create_namespace('ycm_lua_signature')
+M.NS = NS
+
+M.state = {
+  win = nil,
+  buf = nil,
+  req_id = 0,
+  active = false,
+  ts_lang = nil, -- 浮窗 buffer 当前的 treesitter 语言
+}
+
+-- UTF-16 code unit 偏移 -> byte 偏移(LSP 的 label 偏移按 UTF-16 计)
+local function byte_index_utf16(s, offset)
+  -- nvim 0.11+: vim.str_byteindex(s, encoding, index, strict)
+  local ok, res = pcall(vim.str_byteindex, s, 'utf-16', offset, false)
+  if ok then
+    return res
+  end
+  return vim.str_byteindex(s, offset, true) -- 旧签名:第三参为 use_utf16
+end
+
+-- 参数 label 两种形态(对照 lsp_signature helper.cal_active_parameter):
+--   table { start, end }  : 相对 signature label 的 UTF-16 偏移
+--   string                : label 的子串,从 search_from 起找
+-- 返回 0 基 byte [s, e);失败返回 nil
+local function param_range(label, param, search_from)
+  local plabel = param.label
+  if type(plabel) == 'table' then
+    local s = byte_index_utf16(label, plabel[1])
+    local e = byte_index_utf16(label, plabel[2])
+    if s and e and e > s then
+      return s, e
+    end
+    return nil
+  end
+  if type(plabel) == 'string' and plabel ~= '' then
+    local s, e = label:find(plabel, (search_from or 0) + 1, true)
+    if s then
+      return s - 1, e
+    end
+  end
+  return nil
+end
+M.param_range = param_range
+
+-- 逗号计数兜底(参照 lsp_signature helper.fallback,加了嵌套感知):
+-- 先向后找到外层调用的 '(',再向前只数同一层的 ','
+local function fallback_active_parameter()
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local line = vim.api.nvim_get_current_line():sub(1, cur[2])
+  local call_start = nil
+  local depth = 0
+  for i = #line, 1, -1 do
+    local c = line:sub(i, i)
+    if c == ')' or c == ']' or c == '}' then
+      depth = depth + 1
+    elseif c == '(' or c == '[' or c == '{' then
+      if depth == 0 then
+        call_start = i
+        break
+      end
+      depth = depth - 1
+    end
+  end
+  if not call_start then
+    return 0
+  end
+  local count, d = 0, 0
+  for j = call_start + 1, #line do
+    local c = line:sub(j, j)
+    if c == '(' or c == '[' or c == '{' then
+      d = d + 1
+    elseif c == ')' or c == ']' or c == '}' then
+      d = d - 1
+    elseif c == ',' and d == 0 then
+      count = count + 1
+    end
+  end
+  return count
+end
+M.fallback_active_parameter = fallback_active_parameter
+
+-- 支持签名帮助的 LSP 客户端(测试中可替换)
+function M.clients(bufnr)
+  return vim.lsp.get_clients({
+    bufnr = bufnr,
+    method = 'textDocument/signatureHelp',
+  })
+end
+
+-- LSP 请求(测试中可替换)。cb(result | nil)
+function M.request(bufnr, trigger_char, is_retrigger, cb)
+  local clients = M.clients(bufnr)
+  if #clients == 0 then
+    cb(nil)
+    return
+  end
+  local ok, params = pcall(vim.lsp.util.make_position_params, 0,
+    clients[1].offset_encoding)
+  if not ok then
+    params = vim.lsp.util.make_position_params(0)
+  end
+  params.context = {
+    triggerKind = is_retrigger and 3 or (trigger_char and 2 or 1),
+    triggerCharacter = trigger_char,
+    isRetrigger = is_retrigger,
+  }
+  vim.lsp.buf_request_all(bufnr, 'textDocument/signatureHelp', params,
+    function(results)
+      for _, resp in pairs(results) do
+        local r = resp.result
+        if r and r.signatures and #r.signatures > 0 then
+          cb(r)
+          return
+        end
+      end
+      cb(nil)
+    end)
+end
+
+-- ---------------------------------------------------------------------------
+-- 浮窗管理
+-- ---------------------------------------------------------------------------
+local function ensure_buf()
+  if M.state.buf and vim.api.nvim_buf_is_valid(M.state.buf) then
+    return M.state.buf
+  end
+  M.state.buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[M.state.buf].bufhidden = 'wipe'
+  return M.state.buf
+end
+
+function M.close()
+  if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
+    pcall(vim.api.nvim_win_close, M.state.win, true)
+  end
+  M.state.win = nil
+  M.state.active = false
+end
+
+-- 浮窗 buffer 按源文件类型做 treesitter 语法高亮(截图效果:lsp_signature
+-- 用 markdown fence 间接实现;我们直接在 buffer 上起 parser)
+local function apply_syntax_highlight(buf, lang)
+  if not lang or M.state.ts_lang == lang then
+    return
+  end
+  pcall(vim.treesitter.stop, buf)
+  if pcall(vim.treesitter.start, buf, lang) then
+    M.state.ts_lang = lang
+  else
+    M.state.ts_lang = nil
+  end
+end
+
+-- lines: 内容行(首行为签名);hl: { start_byte, end_byte }(0 基,首行)或 nil
+function M.show(lines, hl, lang)
+  local buf = ensure_buf()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_clear_namespace(buf, NS, 0, -1)
+  if hl then
+    -- priority 高于 treesitter(100),确保当前参数高亮不被语法高亮盖住
+    vim.api.nvim_buf_set_extmark(buf, NS, 0, hl[1], {
+      end_col = hl[2],
+      hl_group = 'YcmSignatureActiveParameter',
+      priority = 200,
+      strict = false,
+    })
+  end
+  apply_syntax_highlight(buf, lang)
+
+  local width = 1
+  for _, l in ipairs(lines) do
+    width = math.max(width, vim.fn.strdisplaywidth(l))
+  end
+  width = math.min(width, vim.o.columns - 4)
+  local height = #lines
+  if M.state.win and vim.api.nvim_win_is_valid(M.state.win) then
+    -- 会话中:只更新内容与尺寸,位置保持锚定(对照 YCM 的 anchor 稳定性)
+    vim.api.nvim_win_set_config(M.state.win, { width = width, height = height })
+    return
+  end
+
+  -- 新会话:锚定在当前光标处,优先上方,不够则翻到下方
+  local winline0 = vim.fn.winline() - 1
+  local above = winline0 >= height + 2
+  M.state.win = vim.api.nvim_open_win(buf, false, {
+    relative = 'win',
+    anchor = above and 'SW' or 'NW',
+    row = above and winline0 or winline0 + 1,
+    col = vim.fn.wincol() - 1,
+    width = width,
+    height = height,
+    border = 'single',
+    style = 'minimal',
+    focusable = false,
+    noautocmd = true,
+  })
+  M.state.active = true
+end
+
+-- 处理 signatureHelp 响应
+function M.on_response(result, filetype)
+  if not result or not result.signatures or #result.signatures == 0 then
+    M.close()
+    return
+  end
+  local sig = result.signatures[(result.activeSignature or 0) + 1]
+    or result.signatures[1]
+  local label = sig.label or ''
+  local params = sig.parameters or {}
+
+  local aidx = sig.activeParameter
+  if type(aidx) ~= 'number' then
+    aidx = result.activeParameter
+  end
+  if type(aidx) ~= 'number' or aidx < 0 then
+    aidx = fallback_active_parameter()
+  end
+  if aidx >= #params then
+    aidx = #params - 1
+  end
+
+  local hl = nil
+  local param = aidx >= 0 and params[aidx + 1] or nil
+  if param then
+    -- string label 时从前一个参数的结束位置开始找(避免同名前缀误匹配)
+    local search_from = 0
+    if aidx > 0 and params[aidx] then
+      local _, pe = param_range(label, params[aidx], 0)
+      search_from = pe or 0
+    end
+    local s, e = param_range(label, param, search_from)
+    if s then
+      hl = { s, e }
+    end
+  end
+
+  if #result.signatures > 1 then
+    label = label .. ('  (+%d overloads)'):format(#result.signatures - 1)
+  end
+
+  -- 内容:签名行 + 分隔线 + 文档(如有),对照截图效果
+  local lines = { label }
+  local doc = sig.documentation
+  if type(doc) == 'table' then
+    doc = doc.value -- MarkupContent
+  end
+  if type(doc) == 'string' and doc:match('%S') then
+    doc = vim.trim(doc:gsub('\r\n', '\n'))
+    table.insert(lines, string.rep('─', vim.fn.strdisplaywidth(label)))
+    local dl = 0
+    for line in (doc .. '\n'):gmatch('(.-)\n') do
+      table.insert(lines, line)
+      dl = dl + 1
+      if dl >= 12 then -- 文档行数上限,防止浮窗占屏
+        break
+      end
+    end
+  end
+
+  local lang = filetype and vim.treesitter.language.get_lang(filetype)
+    or filetype
+  M.show(lines, hl, lang)
+end
+
+-- TextChangedI 时调用。last_char 为 InsertCharPre 记录的最后输入字符。
+function M.on_text_changed(bufnr, last_char)
+  if not options.get().signature_help then
+    return
+  end
+  local clients = M.clients(bufnr)
+  if #clients == 0 then
+    if M.state.active then
+      M.close()
+    end
+    return
+  end
+
+  local is_trigger = false
+  if last_char then
+    for _, client in ipairs(clients) do
+      local cp = client.server_capabilities
+        and client.server_capabilities.signatureHelpProvider
+      if cp then
+        if vim.tbl_contains(cp.triggerCharacters or {}, last_char)
+            or vim.tbl_contains(cp.retriggerCharacters or {}, last_char) then
+          is_trigger = true
+          break
+        end
+      end
+    end
+  end
+
+  -- 触发字符,或会话激活中(更新当前参数高亮)
+  if not is_trigger and not M.state.active then
+    return
+  end
+
+  M.state.req_id = M.state.req_id + 1
+  local id = M.state.req_id
+  local was_active = M.state.active
+  local ft = vim.bo[bufnr].filetype
+  M.request(bufnr, is_trigger and last_char or nil, was_active,
+    function(result)
+      if id ~= M.state.req_id then
+        return
+      end
+      vim.schedule(function()
+        if id ~= M.state.req_id then
+          return
+        end
+        local mode = vim.api.nvim_get_mode().mode
+        if mode:sub(1, 1) ~= 'i' and mode:sub(1, 1) ~= 'R' then
+          return
+        end
+        M.on_response(result, ft)
+      end)
+    end)
+end
+
+return M

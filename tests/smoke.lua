@@ -139,6 +139,24 @@ eq(words, { 'util_alpha.lua', 'util_dir/' }, 'relaxed: 裸 token 列出目录内
 eq(path.collect(fbuf, 'lua', false), nil, '非 relaxed: 无 / 的 token 不触发')
 vim.fn.delete(tmpdir, 'rf')
 
+-- ---- signature 单元测试 ----
+do
+  local sig = require('ycm.sources.signature')
+  -- 偏移形态 label(LSP 规范:UTF-16 偏移,ASCII 下即字节偏移)
+  eq({ sig.param_range('foo(a: int, b: str)', { label = { 4, 10 } }) },
+    { 4, 10 }, 'param_range: 偏移形态')
+  -- 字符串形态:在 signature label 中查找
+  eq({ sig.param_range('foo(a: int, b: str)', { label = 'b: str' }) },
+    { 12, 18 }, 'param_range: 字符串形态')
+  -- search_from 防止同名前缀误匹配
+  eq({ sig.param_range('foo(val, value)', { label = 'value' }, 7) },
+    { 9, 14 }, 'param_range: search_from')
+  -- 嵌套调用逗号兜底:foo(bar(1, 2), | -> 外层参数位 1
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'foo(bar(1, 2), ' })
+  vim.api.nvim_win_set_cursor(0, { 1, 15 })
+  eq(sig.fallback_active_parameter(), 1, 'fallback: 嵌套调用取外层参数位')
+end
+
 -- ---- query 计算(StartOfLongestIdentifierEndingAtIndex) ----
 local buf = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_set_current_buf(buf)
@@ -388,6 +406,67 @@ vim.wait(5000, function()
   return #manual_items > 0
 end)
 eq(manual_items, { 'name', 'nickname' }, '<C-Space> 手动触发语义补全')
+
+-- ---- 签名帮助(对照 YCM signature help + lsp_signature 参数高亮) ----
+child([[require('ycm').setup({ use_lsp = false, signature_help = true })
+local sig = require('ycm.sources.signature')
+sig.clients = function()
+  return { { server_capabilities = { signatureHelpProvider = {
+    triggerCharacters = { '(', ',' }, retriggerCharacters = {} } } } }
+end
+sig.request = function(_, ch, retrig, cb)
+  -- 模拟 server:按光标前逗号数返回 activeParameter
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local before = vim.api.nvim_get_current_line():sub(1, cur[2])
+  local _, commas = before:gsub(',', '')
+  cb({ signatures = { { label = 'foo(a: int, b: str)',
+    documentation = 'Add two things.\nReturns something.',
+    parameters = { { label = { 4, 10 } }, { label = { 12, 18 } } } } },
+    activeSignature = 0, activeParameter = commas })
+end
+local buf = vim.api.nvim_get_current_buf()
+vim.bo[buf].filetype = 'lua'
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '' })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })]])
+local function sig_state(code)
+  return child([[local s = require('ycm.sources.signature').state; ]] .. code)
+end
+vim.rpcrequest(chan, 'nvim_input', '<Esc>ifoo(')
+vim.wait(5000, function()
+  return sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]])
+    == true
+end)
+eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[1]]=]),
+  'foo(a: int, b: str)', '签名帮助: 浮窗显示签名')
+-- 文档:签名行 + 分隔线 + 文档行
+local float_lines = sig_state(
+  [=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)]=])
+eq(#float_lines, 4, '签名帮助: 签名+分隔线+文档')
+eq(float_lines[3], 'Add two things.', '签名帮助: 文档内容')
+-- 浮窗 buffer 按源文件类型挂上了 treesitter 语法高亮
+local has_ts = sig_state([=[return pcall(vim.treesitter.get_parser, s.buf)]=])
+eq(has_ts, true, '签名帮助: 浮窗语法高亮')
+eq(sig_state([=[local m = vim.api.nvim_buf_get_extmarks(s.buf,
+    require('ycm.sources.signature').NS, 0, -1, { details = true })[1]
+  return { m[3], m[4].end_col }]=]),
+  { 4, 10 }, '签名帮助: 高亮第 1 个参数')
+-- 敲逗号后高亮移动到第 2 个参数
+vim.rpcrequest(chan, 'nvim_input', '1, ')
+local hl2 = {}
+vim.wait(5000, function()
+  hl2 = sig_state([=[if not (s.win and vim.api.nvim_win_is_valid(s.win)) then
+    return {} end
+  local m = vim.api.nvim_buf_get_extmarks(s.buf,
+    require('ycm.sources.signature').NS, 0, -1, { details = true })[1]
+  return m and { m[3], m[4].end_col } or {}]=])
+  return hl2[1] == 12 and hl2[2] == 18
+end)
+eq(hl2, { 12, 18 }, '签名帮助: 高亮跟随逗号移动')
+-- 高亮组链到主题的 Search(随配色自适应)
+local hl_name = child([[return (vim.api.nvim_get_hl(0,
+  { name = 'YcmSignatureActiveParameter', link = true }).link)]])
+eq(hl_name, 'Search', '签名帮助: 高亮组链接到主题 Search')
+child([[require('ycm.sources.signature').close()]])
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)
 

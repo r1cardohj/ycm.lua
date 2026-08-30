@@ -92,6 +92,7 @@ require('ycm').setup({
   lsp_merge_mode = 'exclusive',  -- or 'merge'
   lsp_snippet_expand = false,    -- expand LSP snippets via vim.snippet
   semantic_triggers = {},        -- per-filetype override, e.g. { python = { '.' } }
+  signature_help = true,         -- signature float with active-parameter highlight
 })
 ```
 
@@ -121,7 +122,7 @@ Status: ✅ done · 🟡 partial · ❌ not implemented
 |---|---|---|
 | `menu` / `kind` fields | ✅ | |
 | Candidate documentation (`info`, preview popup) | ❌ | incl. on-demand resolve |
-| Signature help | ❌ | |
+| Signature help | ✅ | floating window, active-parameter highlight follows your colorscheme |
 | Hover popup | ❌ | |
 
 **Beyond completion** (not planned unless requested — Neovim's built-in
