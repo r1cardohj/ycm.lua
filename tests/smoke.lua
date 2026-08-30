@@ -155,6 +155,17 @@ do
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'foo(bar(1, 2), ' })
   vim.api.nvim_win_set_cursor(0, { 1, 15 })
   eq(sig.fallback_active_parameter(), 1, 'fallback: 嵌套调用取外层参数位')
+  -- activeParameter 越界(pyright overload 索引 bug)时退回逗号计数:
+  -- 光标在 f(a, | 处,应高亮第 2 个参数而非最后一个
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { 'f(a, ' })
+  vim.api.nvim_win_set_cursor(0, { 1, 5 })
+  sig.on_response({ signatures = { { label = 'f(a, b)',
+    parameters = { { label = { 2, 3 } }, { label = { 5, 6 } } } } },
+    activeSignature = 0, activeParameter = 99 }, 'lua')
+  local m = vim.api.nvim_buf_get_extmarks(sig.state.buf, sig.NS, 0, -1,
+    { details = true })[1]
+  eq({ m[3], m[4].end_col }, { 5, 6 }, 'activeParameter 越界退回逗号计数')
+  sig.close()
 end
 
 -- ---- query 计算(StartOfLongestIdentifierEndingAtIndex) ----

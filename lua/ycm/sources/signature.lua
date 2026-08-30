@@ -317,7 +317,9 @@ function M.on_response(result, filetype)
   if type(aidx) ~= 'number' then
     aidx = result.activeParameter
   end
-  if type(aidx) ~= 'number' or aidx < 0 then
+  -- pyright 的 activeParameter 可能是 overload 合并参数表的索引(越界);
+  -- 越界/缺失时退回逗号计数(光标处的真实参数位),最后手段才是夹取
+  if type(aidx) ~= 'number' or aidx < 0 or aidx >= #params then
     aidx = fallback_active_parameter()
   end
   if aidx >= #params then
@@ -366,6 +368,9 @@ function M.on_response(result, filetype)
     doc = doc.value -- MarkupContent
   end
   local has_doc = type(doc) == 'string' and doc:match('%S') ~= nil
+
+  local lang = filetype and vim.treesitter.language.get_lang(filetype)
+    or filetype
 
   local lines, hl_row, fence_rows, show_lang
   if has_doc then
