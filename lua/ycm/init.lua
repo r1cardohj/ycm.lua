@@ -3,6 +3,7 @@
 --   InsertCharPre 区分用户输入与 <C-n> 选择(TextChangedP 不重过滤)
 --   complete() 时临时加 noselect,候选带 equal=1 关闭 Vim 侧过滤
 local options = require('ycm.options')
+local log = require('ycm.log')
 local ident = require('ycm.ident')
 local triggers = require('ycm.triggers')
 local keys = require('ycm.keys')
@@ -300,8 +301,11 @@ local function request_completion(force_semantic)
 
   -- 对照 YCM:等待服务端响应后一次性展示(10ms 轮询),不做两阶段交付,
   -- 否则菜单会在 [ID] 候选和 LSP 候选之间抖动
+  log.add('[lsp] request id=%d query=%q trigger=%s', id, query,
+    tostring(triggered))
   lsp.request(bufnr, triggered and line_before:sub(-1) or nil,
     function(converted)
+      log.add('[lsp] response id=%d items=%d', id, #converted)
       if id ~= state.request_id then
         return
       end
@@ -515,6 +519,11 @@ function M.setup(user_opts)
     for _, l in ipairs(per_ft) do
       print('  ' .. l)
     end
+  end, {})
+
+  vim.api.nvim_create_user_command('YcmLuaDebug', function()
+    local path = require('ycm.log').dump()
+    print('ycm.lua debug log written to ' .. path)
   end, {})
 
   -- setup 时对当前 buffer 生效(YCM 在 VimEnter 后也对首个文件补一次 FileType)

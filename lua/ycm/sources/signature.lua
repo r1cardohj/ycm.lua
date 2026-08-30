@@ -7,6 +7,7 @@
 --   - 当前参数:signature.activeParameter -> result.activeParameter ->
 --     逗号计数兜底(对照 lsp_signature 的 helper.fallback)
 local options = require('ycm.options')
+local log = require('ycm.log')
 
 local M = {}
 
@@ -412,8 +413,12 @@ function M.on_text_changed(bufnr)
   local id = M.state.req_id
   local was_active = M.state.active
   local ft = vim.bo[bufnr].filetype
+  log.add('[sig] request id=%d trigger=%s retrigger=%s', id,
+    tostring(is_trigger and last_char or nil), tostring(was_active))
   M.request(bufnr, is_trigger and last_char or nil, was_active,
     function(result)
+      log.add('[sig] response id=%d signatures=%s', id,
+        result and tostring(#(result.signatures or {})) or 'nil')
       if id ~= M.state.req_id then
         return
       end
@@ -431,6 +436,7 @@ function M.on_text_changed(bufnr)
   -- 超时死等兜底:server 卡死时取消请求,不能让它阻塞后续补全
   vim.defer_fn(function()
     if id == M.state.req_id and next(M.state.pending) then
+      log.add('[sig] timeout cancel id=%d', id)
       M.cancel_pending()
     end
   end, 3000)
