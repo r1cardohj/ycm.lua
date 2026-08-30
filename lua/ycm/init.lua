@@ -470,6 +470,14 @@ function M.setup(user_opts)
   au('TextChangedI', function() on_text_changed_insert_mode(false) end)
   au('TextChangedP', function() on_text_changed_insert_mode(true) end)
   au('InsertLeave', on_insert_leave)
+  -- 光标换行时关闭签名浮窗(同行内打字是正常输入,不关)
+  au('CursorMovedI', function()
+    local sig = require('ycm.sources.signature')
+    if sig.state.active
+        and vim.api.nvim_win_get_cursor(0)[1] ~= sig.state.anchor_row then
+      sig.close()
+    end
+  end)
 
   keys.setup(opts, {
     on_stop = function()

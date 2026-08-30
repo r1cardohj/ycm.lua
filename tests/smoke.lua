@@ -419,9 +419,9 @@ sig.request = function(_, ch, retrig, cb)
   local cur = vim.api.nvim_win_get_cursor(0)
   local before = vim.api.nvim_get_current_line():sub(1, cur[2])
   local _, commas = before:gsub(',', '')
-  cb({ signatures = { { label = 'foo(a: int, b: str)',
+  cb({ signatures = { { label = '(a: int, b: str)',
     documentation = 'Add two things.\nReturns something.',
-    parameters = { { label = { 4, 10 } }, { label = { 12, 18 } } } } },
+    parameters = { { label = { 1, 7 } }, { label = { 9, 15 } } } } },
     activeSignature = 0, activeParameter = commas })
 end
 local buf = vim.api.nvim_get_current_buf()
@@ -437,7 +437,7 @@ vim.wait(5000, function()
     == true
 end)
 eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[1]]=]),
-  'foo(a: int, b: str)', '签名帮助: 浮窗显示签名')
+  'foo(a: int, b: str)', '签名帮助: 浮窗显示签名(label 缺函数名时补被调名)')
 -- 文档:签名行 + 分隔线 + 文档行
 local float_lines = sig_state(
   [=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)]=])
@@ -491,7 +491,7 @@ end)
 eq(sig_state([[return vim.trim(vim.api.nvim_get_current_line())]]), 'baz()',
   '签名帮助: autopairs 插入的括号')
 eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[1]]=]),
-  'foo(a: int, b: str)', '签名帮助: autopairs 场景也弹窗')
+  'baz(a: int, b: str)', '签名帮助: autopairs 场景也弹窗')
 child([[require('ycm.sources.signature').close()]])
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)

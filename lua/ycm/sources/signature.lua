@@ -18,7 +18,8 @@ M.state = {
   buf = nil,
   req_id = 0,
   active = false,
-  ts_lang = nil, -- 浮窗 buffer 当前的 treesitter 语言
+  ts_lang = nil,   -- 浮窗 buffer 当前的 treesitter 语言
+  pending = {},    -- 在途请求 client_id -> request_id
 }
 
 -- UTF-16 code unit 偏移 -> byte 偏移(LSP 的 label 偏移按 UTF-16 计)
@@ -92,12 +93,58 @@ local function fallback_active_parameter()
 end
 M.fallback_active_parameter = fallback_active_parameter
 
+-- 光标前的字符(对照 ycmd 的缓冲区文本触发判定;不依赖 InsertCharPre,
+-- 兼容 autopairs 等映射插入——映射展开的字符不触发 InsertCharPre)
+local function char_before_cursor()
+  local cur = vim.api.nvim_win_get_cursor(0)
+  if cur[2] == 0 then
+    return nil
+  end
+  local line = vim.api.nvim_get_current_line()
+  local ch = line:sub(cur[2], cur[2])
+  return ch ~= '' and ch or nil
+end
+
+-- 光标所在调用的函数名(pyright 等 server 的 label 不带函数名,如 open 的
+-- label 以 '(' 开头,展示时补上;对照 YCM/Jedi 的显示效果)
+local function callee_name()
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local before = vim.api.nvim_get_current_line():sub(1, cur[2])
+  local depth = 0
+  for i = #before, 1, -1 do
+    local c = before:sub(i, i)
+    if c == ')' or c == ']' or c == '}' then
+      depth = depth + 1
+    elseif c == '(' then
+      if depth == 0 then
+        return before:sub(1, i - 1):match('([%w_%.:]+)%s*$')
+      end
+      depth = depth - 1
+    elseif c == '[' or c == '{' then
+      depth = depth - 1
+    end
+  end
+  return nil
+end
+M.callee_name = callee_name
+
 -- 支持签名帮助的 LSP 客户端(测试中可替换)
 function M.clients(bufnr)
   return vim.lsp.get_clients({
     bufnr = bufnr,
     method = 'textDocument/signatureHelp',
   })
+end
+
+-- 取消在途请求(对照 lsp_signature;避免慢响应堆积拖垮 server)
+local function cancel_pending()
+  for cid, rid in pairs(M.state.pending) do
+    local client = vim.lsp.get_client_by_id(cid)
+    if client then
+      pcall(client.cancel_request, client, rid)
+    end
+  end
+  M.state.pending = {}
 end
 
 -- LSP 请求(测试中可替换)。cb(result | nil)
@@ -107,6 +154,7 @@ function M.request(bufnr, trigger_char, is_retrigger, cb)
     cb(nil)
     return
   end
+  cancel_pending()
   local ok, params = pcall(vim.lsp.util.make_position_params, 0,
     clients[1].offset_encoding)
   if not ok then
@@ -117,17 +165,32 @@ function M.request(bufnr, trigger_char, is_retrigger, cb)
     triggerCharacter = trigger_char,
     isRetrigger = is_retrigger,
   }
-  vim.lsp.buf_request_all(bufnr, 'textDocument/signatureHelp', params,
-    function(results)
-      for _, resp in pairs(results) do
-        local r = resp.result
-        if r and r.signatures and #r.signatures > 0 then
-          cb(r)
-          return
-        end
-      end
+  local remaining = #clients
+  local done = false
+  local function finish(result)
+    if done then
+      return
+    end
+    if result and result.signatures and #result.signatures > 0 then
+      done = true
+      cb(result)
+      return
+    end
+    remaining = remaining - 1
+    if remaining == 0 then
+      done = true
       cb(nil)
-    end)
+    end
+  end
+  for _, client in ipairs(clients) do
+    local _, rid = client:request('textDocument/signatureHelp', params,
+      function(err, result)
+        finish(result)
+      end, bufnr)
+    if rid then
+      M.state.pending[client.id] = rid
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -149,6 +212,7 @@ function M.close()
   end
   M.state.win = nil
   M.state.active = false
+  M.state.req_id = M.state.req_id + 1 -- 使迟到的响应失效
 end
 
 -- 浮窗 buffer 按源文件类型做 treesitter 语法高亮(截图效果:lsp_signature
@@ -196,14 +260,14 @@ function M.show(lines, hl, lang)
     return
   end
 
-  -- 新会话:锚定在当前光标处,优先上方,不够则翻到下方
-  local winline0 = vim.fn.winline() - 1
-  local above = winline0 >= height + 2
+  -- 新会话:锚定在光标处(relative='cursor',不涉 gutter 换算),
+  -- 优先上方,不够则翻到下方
+  local above = vim.fn.winline() - 1 >= height + 2
   M.state.win = vim.api.nvim_open_win(buf, false, {
-    relative = 'win',
+    relative = 'cursor',
     anchor = above and 'SW' or 'NW',
-    row = above and winline0 or winline0 + 1,
-    col = vim.fn.wincol() - 1,
+    row = above and 0 or 1,
+    col = 0,
     width = width,
     height = height,
     border = 'single',
@@ -212,6 +276,7 @@ function M.show(lines, hl, lang)
     noautocmd = true,
   })
   M.state.active = true
+  M.state.anchor_row = vim.api.nvim_win_get_cursor(0)[1]
 end
 
 -- 处理 signatureHelp 响应
@@ -255,18 +320,38 @@ function M.on_response(result, filetype)
     label = label .. ('  (+%d overloads)'):format(#result.signatures - 1)
   end
 
+  -- pyright 等的 label 不带函数名(以 '(' 开头),补上被调名;
+  -- 注意 hl 偏移基于原始 label,前缀后整体平移
+  if label:sub(1, 1) == '(' then
+    local callee = callee_name()
+    if callee then
+      label = callee .. label
+      if hl then
+        hl = { hl[1] + #callee, hl[2] + #callee }
+      end
+    end
+  end
+
   -- 内容:签名行 + 分隔线 + 文档(如有),对照截图效果
-  local lines = { label }
+  local max_width = vim.o.columns - 4
+  local function truncate(s)
+    if vim.fn.strdisplaywidth(s) > max_width then
+      return vim.fn.strcharpart(s, 0, max_width - 1) .. '…'
+    end
+    return s
+  end
+  local lines = { truncate(label) }
   local doc = sig.documentation
   if type(doc) == 'table' then
     doc = doc.value -- MarkupContent
   end
   if type(doc) == 'string' and doc:match('%S') then
     doc = vim.trim(doc:gsub('\r\n', '\n'))
-    table.insert(lines, string.rep('─', vim.fn.strdisplaywidth(label)))
+    table.insert(lines, string.rep('─',
+      math.min(vim.fn.strdisplaywidth(label), max_width)))
     local dl = 0
     for line in (doc .. '\n'):gmatch('(.-)\n') do
-      table.insert(lines, line)
+      table.insert(lines, truncate(line))
       dl = dl + 1
       if dl >= 12 then -- 文档行数上限,防止浮窗占屏
         break
@@ -279,17 +364,6 @@ function M.on_response(result, filetype)
   M.show(lines, hl, lang)
 end
 
--- 光标前的字符(对照 ycmd 的缓冲区文本触发判定;不依赖 InsertCharPre,
--- 兼容 autopairs 等映射插入——映射展开的字符不触发 InsertCharPre)
-local function char_before_cursor()
-  local cur = vim.api.nvim_win_get_cursor(0)
-  if cur[2] == 0 then
-    return nil
-  end
-  local line = vim.api.nvim_get_current_line()
-  local ch = line:sub(cur[2], cur[2])
-  return ch ~= '' and ch or nil
-end
 
 -- TextChangedI 时调用
 function M.on_text_changed(bufnr)
@@ -306,22 +380,28 @@ function M.on_text_changed(bufnr)
 
   local last_char = char_before_cursor()
   local is_trigger = false
+  local is_retrigger = false
   if last_char then
     for _, client in ipairs(clients) do
       local cp = client.server_capabilities
         and client.server_capabilities.signatureHelpProvider
       if cp then
-        if vim.tbl_contains(cp.triggerCharacters or {}, last_char)
-            or vim.tbl_contains(cp.retriggerCharacters or {}, last_char) then
+        if vim.tbl_contains(cp.triggerCharacters or {}, last_char) then
           is_trigger = true
+        end
+        if vim.tbl_contains(cp.retriggerCharacters or {}, last_char) then
+          is_retrigger = true
+        end
+        if is_trigger or is_retrigger then
           break
         end
       end
     end
   end
 
-  -- 触发字符,或会话激活中(更新当前参数高亮)
-  if not is_trigger and not M.state.active then
+  -- 触发字符,或会话激活中(更新当前参数高亮)。会话中的频繁请求靠
+  -- cancel_pending 取消在途旧请求(对照 lsp_signature),不会堆积拖垮 server
+  if not is_trigger and not is_retrigger and not M.state.active then
     return
   end
 
