@@ -294,6 +294,10 @@ local function request_completion(force_semantic)
     return
   end
 
+  -- 补全优先于签名帮助:掐掉在途的签名请求,避免慢 server(如 pyright
+  -- 冷分析)卡住的 signatureHelp 把补全响应饿死
+  signature.cancel_pending()
+
   -- 对照 YCM:等待服务端响应后一次性展示(10ms 轮询),不做两阶段交付,
   -- 否则菜单会在 [ID] 候选和 LSP 候选之间抖动
   lsp.request(bufnr, triggered and line_before:sub(-1) or nil,

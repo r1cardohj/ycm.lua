@@ -137,7 +137,7 @@ function M.clients(bufnr)
 end
 
 -- 取消在途请求(对照 lsp_signature;避免慢响应堆积拖垮 server)
-local function cancel_pending()
+function M.cancel_pending()
   for cid, rid in pairs(M.state.pending) do
     local client = vim.lsp.get_client_by_id(cid)
     if client then
@@ -154,7 +154,7 @@ function M.request(bufnr, trigger_char, is_retrigger, cb)
     cb(nil)
     return
   end
-  cancel_pending()
+  M.cancel_pending()
   local ok, params = pcall(vim.lsp.util.make_position_params, 0,
     clients[1].offset_encoding)
   if not ok then
@@ -173,12 +173,14 @@ function M.request(bufnr, trigger_char, is_retrigger, cb)
     end
     if result and result.signatures and #result.signatures > 0 then
       done = true
+      M.state.pending = {}
       cb(result)
       return
     end
     remaining = remaining - 1
     if remaining == 0 then
       done = true
+      M.state.pending = {}
       cb(nil)
     end
   end
@@ -213,6 +215,7 @@ function M.close()
   M.state.win = nil
   M.state.active = false
   M.state.req_id = M.state.req_id + 1 -- 使迟到的响应失效
+  M.cancel_pending()
 end
 
 -- 浮窗 buffer 按源文件类型做 treesitter 语法高亮(截图效果:lsp_signature
@@ -425,6 +428,12 @@ function M.on_text_changed(bufnr)
         M.on_response(result, ft)
       end)
     end)
+  -- 超时死等兜底:server 卡死时取消请求,不能让它阻塞后续补全
+  vim.defer_fn(function()
+    if id == M.state.req_id and next(M.state.pending) then
+      M.cancel_pending()
+    end
+  end, 3000)
 end
 
 return M

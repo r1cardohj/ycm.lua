@@ -493,6 +493,52 @@ eq(sig_state([[return vim.trim(vim.api.nvim_get_current_line())]]), 'baz()',
 eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[1]]=]),
   'baz(a: int, b: str)', '签名帮助: autopairs 场景也弹窗')
 child([[require('ycm.sources.signature').close()]])
+
+-- ---- 回归:签名请求卡死绝不能影响后续语义补全(补全优先) ----
+child([[require('ycm').setup({ use_lsp = true })
+local sig = require('ycm.sources.signature')
+sig.clients = function()
+  return { { server_capabilities = { signatureHelpProvider = {
+    triggerCharacters = { '(' } } } } }
+end
+_G.sig_requests = 0
+sig.request = function(_, _, _, cb)
+  _G.sig_requests = _G.sig_requests + 1
+  -- 永不回调,模拟卡死的 server
+end
+_G.cancels = 0
+local orig_cancel = sig.cancel_pending
+sig.cancel_pending = function()
+  _G.cancels = _G.cancels + 1
+  orig_cancel()
+end
+local lsp = require('ycm.sources.lsp')
+lsp.has_clients = function() return true end
+lsp.clients = function() return { { offset_encoding = 'utf-16' } } end
+lsp.request = function(_, _, cb)
+  cb({ { match_text = 'name',
+    item = { word = 'name', menu = 'lsp', equal = 1, dup = 1, empty = 1 } } })
+end
+local buf = vim.api.nvim_get_current_buf()
+vim.bo[buf].filetype = 'python'
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '' })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })]])
+vim.rpcrequest(chan, 'nvim_input', '<Esc>ifoo(') -- 签名请求发出,server 卡死
+vim.wait(500, function() return false end)
+eq(child([[return _G.sig_requests > 0]]), true, '卡死的签名请求已发出')
+-- 换行敲 self. → 语义补全必须照常出现
+vim.rpcrequest(chan, 'nvim_input', '<CR>self.')
+local stuck_items = {}
+vim.wait(5000, function()
+  stuck_items = child([[if vim.fn.pumvisible() == 1 then
+    return vim.tbl_map(function(i) return i.word end,
+      vim.fn.complete_info({ 'items' }).items)
+  end
+  return {}]])
+  return #stuck_items > 0
+end)
+eq(stuck_items, { 'name' }, '签名卡死时 self. 语义补全照常')
+eq(child([[return _G.cancels > 0]]), true, '补全优先:掐掉在途签名请求')
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)
 
