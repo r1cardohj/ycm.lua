@@ -356,6 +356,38 @@ vim.wait(5000, function()
 end)
 -- 注意:else/elseif 来自特性2播种的 lua 关键字(subsequence 'se' 命中)
 eq(code_items, { 'self_hint', 'else', 'elseif' }, '正常代码内输入弹菜单')
+
+-- ---- 手动语义触发(对照 g:ycm_key_invoke_completion = <C-Space>) ----
+child([[require('ycm').setup({ use_lsp = true })
+local lsp = require('ycm.sources.lsp')
+lsp.has_clients = function() return true end
+lsp.clients = function() return { { offset_encoding = 'utf-16' } } end
+lsp.request = function(_, _, cb)
+  local function it(w)
+    return { match_text = w,
+      item = { word = w, menu = 'lsp', equal = 1, dup = 1, empty = 1 } }
+  end
+  cb({ it('name'), it('nickname') })
+end
+local buf = vim.api.nvim_get_current_buf()
+vim.bo[buf].filetype = 'lua'
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '' })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })]])
+vim.rpcrequest(chan, 'nvim_input', '<Esc>in') -- 只敲 1 个字符,不到自动触发阈值
+vim.wait(1000, function() return false end)
+eq(child([[return vim.fn.pumvisible()]]), 0,
+  '单字符不自动触发(也不该有语义补全)')
+vim.rpcrequest(chan, 'nvim_input', '<C-Space>') -- 手动唤起语义补全
+local manual_items = {}
+vim.wait(5000, function()
+  manual_items = child([[if vim.fn.pumvisible() == 1 then
+    return vim.tbl_map(function(i) return i.word end,
+      vim.fn.complete_info({ 'items' }).items)
+  end
+  return {}]])
+  return #manual_items > 0
+end)
+eq(manual_items, { 'name', 'nickname' }, '<C-Space> 手动触发语义补全')
 vim.rpcnotify(chan, 'nvim_command', 'qa!')
 vim.fn.jobstop(job)
 

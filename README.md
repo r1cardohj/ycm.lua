@@ -42,6 +42,11 @@ identifier completer, and the Vimscript orchestration in
   reopen the menu (the classic YCM trick)
 - **`<C-n>`/`<C-p>` never re-filters** — selection changes don't retrigger
   completion
+- **Manual semantic trigger** — `<C-Space>` (configurable via
+  `key_invoke_completion`; terminals sending `<Nul>` are handled) forces a
+  semantic completion request at any position. Prefer your own key? Map
+  `<Plug>(YcmLuaComplete)`, e.g.
+  `vim.keymap.set('i', '<C-j>', '<Plug>(YcmLuaComplete)', { remap = true })`
 - **Semantic completion only on triggers** — `.`, `->`, `::` (per filetype) or
   `<C-Space>`; plain typing gives you lightning-fast identifier completion
   from all open buffers, exactly like YCM

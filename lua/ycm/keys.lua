@@ -56,7 +56,7 @@ function M.setup(opts, callbacks)
       callbacks.on_invoke()
       return ''
     end)
-    -- 终端里 <C-Space> 常被传为 <Nul>
+    -- 终端里 <C-Space> 常被传为 <Nul>(同 YCM)
     if opts.key_invoke_completion == '<C-Space>' then
       map('<Nul>', function()
         callbacks.on_invoke()
@@ -64,6 +64,13 @@ function M.setup(opts, callbacks)
       end)
     end
   end
+
+  -- 对照 YCM 的 <plug>(YCMComplete):供用户自定义手动语义触发键位
+  -- 例:vim.keymap.set('i', '<C-j>', '<Plug>(YcmLuaComplete)', { remap = true })
+  vim.keymap.set('i', '<Plug>(YcmLuaComplete)', function()
+    callbacks.on_invoke()
+    return ''
+  end, { expr = true, silent = true })
 end
 
 function M.teardown()
