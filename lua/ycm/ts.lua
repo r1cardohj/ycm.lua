@@ -213,6 +213,87 @@ function M.in_import_string(bufnr)
 end
 
 -- ---------------------------------------------------------------------------
+-- 宏调用检测(rust):光标所在的 macro_invocation。
+-- 返回 { name = <宏名>, row = <0 基>, col = <0 基> }(row/col 指向宏名末尾段,
+-- 供 hover 请求用);不在宏内(含光标已到闭界符之后)返回 nil。
+-- treesitter 优先;解析失败/无 parser 时(rust)退回当前行的文本扫描——
+-- 键入宏参数的中间态(未闭合的引号/逗号)常把宏调用解析成 ERROR 节点。
+-- ---------------------------------------------------------------------------
+
+-- 文本兜底:当前行光标前反向扫描未闭合括弧(参照 signature.lua 的
+-- fallback_active_parameter),前缀形如 ident! / path::ident! 视为宏调用;
+-- 前缀不匹配的未闭合括弧(嵌套的真实调用)跳过,继续向外找
+local function macro_call_textual(bufnr)
+  local cur = vim.api.nvim_win_get_cursor(0)
+  local line = vim.api.nvim_get_current_line():sub(1, cur[2])
+  local depth = 0
+  for i = #line, 1, -1 do
+    local c = line:sub(i, i)
+    if c == ')' or c == ']' or c == '}' then
+      depth = depth + 1
+    elseif c == '(' or c == '[' or c == '{' then
+      if depth == 0 then
+        local prefix = line:sub(1, i - 1):gsub('%s*$', '')
+        local name = prefix:match('([%w_][%w_:]*)!$')
+        if name then
+          -- hover 位置:宏名末尾字符(! 的前一个)
+          return { name = name, row = cur[1] - 1,
+            col = math.max(#prefix - 2, 0) }
+        end
+      else
+        depth = depth - 1
+      end
+    end
+  end
+  return nil
+end
+
+function M.macro_call_at_cursor(bufnr)
+  bufnr = bufnr or 0
+  local node = M.node_at_cursor(bufnr)
+  if node then
+    local cur = vim.api.nvim_win_get_cursor(0)
+    while node do
+      if node:type() == 'macro_invocation' then
+        -- token_tree 有真实闭界符时,光标移到 `)`/`]`/`}` 之后视为宏外。
+        -- 未闭合时 parser 会错误恢复出零宽 missing 闭界符(node:missing()),
+        -- 其 end 恰好在光标处,不能按 end 判断
+        for child in node:iter_children() do
+          if child:type() == 'token_tree' then
+            local last = child:child(child:child_count() - 1)
+            if last and not last:missing()
+                and (last:type() == ')' or last:type() == ']'
+                  or last:type() == '}') then
+              local er, ec = child:end_()
+              if cur[1] - 1 > er or (cur[1] - 1 == er and cur[2] >= ec) then
+                return nil
+              end
+            end
+            break
+          end
+        end
+        -- 宏名节点(field 'macro';scoped 路径如 std::println 取末尾段 hover)
+        local name_node = node:field('macro')[1]
+        if name_node then
+          local ok, text = pcall(vim.treesitter.get_node_text, name_node, bufnr)
+          if ok and text and text ~= '' then
+            local _, _, er, ec = name_node:range()
+            return { name = text, row = er, col = math.max(ec - 1, 0) }
+          end
+        end
+        return nil
+      end
+      node = node:parent()
+    end
+  end
+  -- treesitter 无结果(解析错误/无 parser):rust 走文本兜底
+  if vim.bo[bufnr].filetype == 'rust' then
+    return macro_call_textual(bufnr)
+  end
+  return nil
+end
+
+-- ---------------------------------------------------------------------------
 -- 成员访问学习:收集 receiver.member / receiver->member / receiver:method
 -- 的从属关系(receiver 须为单个标识符节点,链式访问如 a.b.c 不展开)。
 -- 返回 { receiver -> { member -> true } };无 parser 时返回 nil(fallback:

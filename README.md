@@ -122,7 +122,7 @@ Status: ✅ done · 🟡 partial · ❌ not implemented
 |---|---|---|
 | `menu` / `kind` fields | ✅ | |
 | Candidate documentation (`info`, preview popup) | ❌ | incl. on-demand resolve |
-| Signature help | ✅ | floating window, active-parameter highlight follows your colorscheme |
+| Signature help | ✅ | floating window, active-parameter highlight follows your colorscheme; inside Rust macro calls (`println!(…)`) falls back to the macro's hover definition, since rust-analyzer doesn't implement signature help for macros |
 | Hover popup | ❌ | |
 
 **Beyond completion** (not planned unless requested — Neovim's built-in

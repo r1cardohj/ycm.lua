@@ -6,8 +6,14 @@
 --     避免浮窗随输入横向跳动);当前参数用 extmark 高亮
 --   - 当前参数:signature.activeParameter -> result.activeParameter ->
 --     逗号计数兜底(对照 lsp_signature 的 helper.fallback)
+--   - 宏回退:rust-analyzer 对宏调用不实现 signatureHelp
+--     (rust-lang/rust-analyzer#3066),println!( 等宏内请求只会拿到 null。
+--     server 无结果且 treesitter 判定光标在 macro_invocation 内时,
+--     退化为宏名处的 hover(宏定义+文档)充当签名浮窗;同一宏节点去重,
+--     避免会话内每次按键重复 hover
 local options = require('ycm.options')
 local log = require('ycm.log')
+local ts = require('ycm.ts')
 
 local M = {}
 
@@ -21,6 +27,7 @@ M.state = {
   active = false,
   ts_lang = nil,   -- 浮窗 buffer 当前的 treesitter 语言
   pending = {},    -- 在途请求 client_id -> request_id
+  macro = nil,     -- 宏回退去重缓存 { bufnr, name, row, col, empty? }
 }
 
 -- UTF-16 code unit 偏移 -> byte 偏移(LSP 的 label 偏移按 UTF-16 计)
@@ -215,6 +222,7 @@ function M.close()
   end
   M.state.win = nil
   M.state.active = false
+  M.state.macro = nil
   M.state.req_id = M.state.req_id + 1 -- 使迟到的响应失效
   M.cancel_pending()
 end
@@ -308,6 +316,7 @@ function M.on_response(result, filetype)
     M.close()
     return
   end
+  M.state.macro = nil -- 真实签名覆盖宏回退状态
   local sig = result.signatures[(result.activeSignature or 0) + 1]
     or result.signatures[1]
   local label = sig.label or ''
@@ -398,6 +407,106 @@ function M.on_response(result, filetype)
 end
 
 
+-- ---------------------------------------------------------------------------
+-- 宏回退:server 对宏调用无 signatureHelp 时,用宏名 hover 充当签名
+-- ---------------------------------------------------------------------------
+
+-- hover 请求(宏回退用,测试中可替换)。row/col 为 0 基 byte 位置。cb(result | nil)
+function M.hover_request(bufnr, row, col, cb)
+  local clients = vim.lsp.get_clients({
+    bufnr = bufnr,
+    method = 'textDocument/hover',
+  })
+  if #clients == 0 then
+    cb(nil)
+    return
+  end
+  local ok, params = pcall(vim.lsp.util.make_position_params, 0,
+    clients[1].offset_encoding)
+  if not ok then
+    params = vim.lsp.util.make_position_params(0)
+  end
+  -- treesitter 给的是 byte 列,转成 client 的 offset encoding
+  local enc = clients[1].offset_encoding or 'utf-16'
+  local ccol = col
+  if enc ~= 'utf-8' then
+    local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ''
+    local cok, res = pcall(vim.str_utfindex, line, enc, col, false)
+    if cok then
+      ccol = res
+    end
+  end
+  params.position = { line = row, character = ccol }
+  clients[1]:request('textDocument/hover', params, function(_, result)
+    cb(result)
+  end, bufnr)
+end
+
+-- 处理宏 hover 响应:宏定义+文档(markdown)直接进签名浮窗
+function M.on_macro_hover(result, bufnr, m)
+  local lines = result and result.contents
+    and vim.lsp.util.convert_input_to_markdown_lines(result.contents)
+    or nil
+  if lines then
+    lines = vim.lsp.util.trim_empty_lines(lines)
+  end
+  if not lines or #lines == 0 then
+    -- 无 hover 内容:关闭并记住,同一宏内后续触发字符不再重复请求
+    M.close()
+    M.state.macro = { bufnr = bufnr, name = m.name, row = m.row,
+      col = m.col, empty = true }
+    return
+  end
+  if #lines > 20 then -- 文档再长也不占屏
+    local cut = {}
+    for i = 1, 20 do
+      cut[i] = lines[i]
+    end
+    lines = cut
+  end
+  -- markdown 围栏行整行隐藏(同 on_response 的代码围栏方案)
+  local fence_rows = {}
+  for i, l in ipairs(lines) do
+    if l:match('^```') then
+      fence_rows[#fence_rows + 1] = i - 1
+    end
+  end
+  M.state.macro = { bufnr = bufnr, name = m.name, row = m.row, col = m.col }
+  M.show(lines, nil, { lang = 'markdown', fence_rows = fence_rows })
+end
+
+-- server 无签名结果时调用:光标在宏调用内则 hover 宏名,否则关闭
+function M.try_macro_fallback(bufnr)
+  local m = ts.macro_call_at_cursor(bufnr)
+  if not m then
+    M.close()
+    return
+  end
+  local cached = M.state.macro
+  if cached and cached.bufnr == bufnr and cached.name == m.name
+      and cached.row == m.row and cached.col == m.col then
+    -- 同一宏节点:浮窗已展示 / hover 在途 / 已知无 hover(empty),保持现状
+    return
+  end
+  M.state.macro = { bufnr = bufnr, name = m.name, row = m.row, col = m.col }
+  local id = M.state.req_id
+  M.hover_request(bufnr, m.row, m.col, function(result)
+    if id ~= M.state.req_id then
+      return
+    end
+    vim.schedule(function()
+      if id ~= M.state.req_id then
+        return
+      end
+      local mode = vim.api.nvim_get_mode().mode
+      if mode:sub(1, 1) ~= 'i' and mode:sub(1, 1) ~= 'R' then
+        return
+      end
+      M.on_macro_hover(result, bufnr, m)
+    end)
+  end)
+end
+
 -- TextChangedI 时调用
 function M.on_text_changed(bufnr)
   if not options.get().signature_help then
@@ -459,7 +568,12 @@ function M.on_text_changed(bufnr)
         if mode:sub(1, 1) ~= 'i' and mode:sub(1, 1) ~= 'R' then
           return
         end
-        M.on_response(result, ft)
+        if result and result.signatures and #result.signatures > 0 then
+          M.on_response(result, ft)
+        else
+          -- server 无结果:rust 宏调用等场景走 hover 回退(不在宏内则关闭)
+          M.try_macro_fallback(bufnr)
+        end
       end)
     end)
   -- 超时死等兜底:server 卡死时取消请求,不能让它阻塞后续补全

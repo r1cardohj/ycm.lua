@@ -168,6 +168,64 @@ do
   sig.close()
 end
 
+-- ---- 宏调用检测(ts.macro_call_at_cursor,rust 宏内签名回退用) ----
+do
+  local ts_mod = require('ycm.ts')
+  local rbuf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(rbuf)
+  vim.bo[rbuf].filetype = 'rust'
+  -- 列: 4='println!'起, 11='!', 12='(', 13..16='"{}"', 17=',', 19='4',
+  -- 20='2', 21=')', 22=';'
+  vim.api.nvim_buf_set_lines(rbuf, 0, -1, false, {
+    'fn main() {',
+    '    println!("{}", 42);',
+    '}',
+  })
+  vim.api.nvim_win_set_cursor(0, { 2, 13 }) -- println!(| 之后
+  local mc = ts_mod.macro_call_at_cursor(rbuf)
+  eq(mc ~= nil and mc.name or nil, 'println', '宏检测: 光标在宏内识别宏名')
+  eq(mc and { mc.row, mc.col } or nil, { 1, 10 }, '宏检测: hover 位置在宏名末尾')
+  vim.api.nvim_win_set_cursor(0, { 2, 21 }) -- 42 之后、) 之前
+  mc = ts_mod.macro_call_at_cursor(rbuf)
+  eq(mc ~= nil and mc.name or nil, 'println', '宏检测: 宏参数末尾仍在宏内')
+  vim.api.nvim_win_set_cursor(0, { 2, 22 }) -- ) 之后
+  eq(ts_mod.macro_call_at_cursor(rbuf), nil, '宏检测: 闭界符之后视为宏外')
+  vim.api.nvim_win_set_cursor(0, { 1, 6 }) -- fn main(| 普通函数
+  eq(ts_mod.macro_call_at_cursor(rbuf), nil, '宏检测: 普通函数内返回 nil')
+  -- 正在输入中的未闭合宏: println!(| (token_tree 的 end 恰好在光标处)
+  vim.api.nvim_buf_set_lines(rbuf, 1, 2, false, { '    println!(' })
+  vim.api.nvim_win_set_cursor(0, { 2, 13 })
+  mc = ts_mod.macro_call_at_cursor(rbuf)
+  eq(mc ~= nil and mc.name or nil, 'println', '宏检测: 未闭合宏调用也算宏内')
+  -- 键入中间态(宏调用被解析成 ERROR 节点):文本兜底
+  vim.api.nvim_buf_set_lines(rbuf, 1, 2, false, { '    println!("' })
+  vim.api.nvim_win_set_cursor(0, { 2, 14 })
+  mc = ts_mod.macro_call_at_cursor(rbuf)
+  eq(mc ~= nil and mc.name or nil, 'println',
+    '宏检测: 未闭合字符串(键入中间态)文本兜底')
+  vim.api.nvim_buf_set_lines(rbuf, 1, 2, false, { '    println!("{}", ' })
+  vim.api.nvim_win_set_cursor(0, { 2, 20 })
+  mc = ts_mod.macro_call_at_cursor(rbuf)
+  eq(mc ~= nil and mc.name or nil, 'println',
+    '宏检测: 逗号后的中间态文本兜底')
+  -- 文本兜底不误伤普通调用/非宏语法
+  vim.api.nvim_buf_set_lines(rbuf, 1, 2, false, { '    foo(' })
+  vim.api.nvim_win_set_cursor(0, { 2, 8 })
+  eq(ts_mod.macro_call_at_cursor(rbuf), nil, '宏检测: 普通未闭合调用不误判')
+  vim.api.nvim_buf_set_lines(rbuf, 1, 2, false, { '    if !(x) { ' })
+  vim.api.nvim_win_set_cursor(0, { 2, 12 })
+  eq(ts_mod.macro_call_at_cursor(rbuf), nil, '宏检测: !( 取反不误判')
+  -- 无 parser 的 filetype: 返回 nil(调用方走“非宏”路径)
+  local nbuf2 = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(nbuf2)
+  vim.bo[nbuf2].filetype = 'notrealft'
+  vim.api.nvim_buf_set_lines(nbuf2, 0, -1, false, { 'println!("x")' })
+  vim.api.nvim_win_set_cursor(0, { 1, 10 })
+  eq(ts_mod.macro_call_at_cursor(nbuf2), nil, '宏检测: 无 parser 返回 nil')
+  vim.api.nvim_buf_delete(rbuf, { force = true })
+  vim.api.nvim_buf_delete(nbuf2, { force = true })
+end
+
 -- ---- query 计算(StartOfLongestIdentifierEndingAtIndex) ----
 local buf = vim.api.nvim_create_buf(false, true)
 vim.api.nvim_set_current_buf(buf)
@@ -517,6 +575,57 @@ eq(sig_state([[return vim.trim(vim.api.nvim_get_current_line())]]), 'baz()',
   '签名帮助: autopairs 插入的括号')
 eq(sig_state([=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)[2]]=]),
   'baz(a: int, b: str)', '签名帮助: autopairs 场景也弹窗')
+child([[require('ycm.sources.signature').close()]])
+
+-- ---- 宏回退:server 对宏调用无签名(rust-analyzer #3066)时, ----
+-- ---- 用宏名 hover(宏定义+文档)充当签名浮窗,同一宏节点去重     ----
+child([[require('ycm').setup({ use_lsp = false, signature_help = true })
+local sig = require('ycm.sources.signature')
+sig.clients = function()
+  return { { server_capabilities = { signatureHelpProvider = {
+    triggerCharacters = { '(', ',' }, retriggerCharacters = {} } } } }
+end
+sig.request = function(_, _, _, cb)
+  cb(nil) -- rust-analyzer 对宏调用的 signatureHelp 返回 null
+end
+_G.hover_calls = 0
+sig.hover_request = function(_, row, col, cb)
+  _G.hover_calls = _G.hover_calls + 1
+  cb({ contents = { kind = 'markdown',
+    value = '```rust\nmacro_rules! println\n```\n\nPrints to stdout.' } })
+end
+-- 子实例(--clean)没有 rust parser,stub 掉 treesitter 检测
+require('ycm.ts').macro_call_at_cursor = function(_)
+  if vim.api.nvim_get_current_line():find('println!') then
+    return { name = 'println', row = 0, col = 4 }
+  end
+  return nil
+end
+local buf = vim.api.nvim_get_current_buf()
+vim.bo[buf].filetype = 'rust'
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '' })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })]])
+vim.rpcrequest(chan, 'nvim_input', '<Esc>iprintln!(')
+vim.wait(5000, function()
+  return sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]])
+    == true
+end)
+local macro_lines = sig_state(
+  [=[return vim.api.nvim_buf_get_lines(s.buf, 0, -1, false)]=])
+eq(macro_lines[2], 'macro_rules! println', '宏回退: 浮窗展示宏定义')
+eq(macro_lines[5], 'Prints to stdout.', '宏回退: 浮窗展示宏文档')
+eq(child([[return _G.hover_calls]]), 1, '宏回退: 一次 hover')
+-- 会话内继续输入(含 retrigger 字符 ','):同一宏节点不重复 hover
+vim.rpcrequest(chan, 'nvim_input', '"{}", 42')
+vim.wait(1500, function() return false end)
+eq(child([[return _G.hover_calls]]), 1, '宏回退: 同一宏节点去重,不重复 hover')
+eq(sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]]),
+  true, '宏回退: 会话内浮窗保持')
+-- 光标离开宏(stub 按行内容判定)后浮窗关闭
+vim.rpcrequest(chan, 'nvim_input', '<Esc>ofoo(')
+vim.wait(1500, function() return false end)
+eq(sig_state([[return s.win ~= nil and vim.api.nvim_win_is_valid(s.win)]]),
+  false, '宏回退: 离开宏后浮窗关闭')
 child([[require('ycm.sources.signature').close()]])
 
 -- ---- 回归:签名请求卡死绝不能影响后续语义补全(补全优先) ----
